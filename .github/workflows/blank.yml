@@ -1,4 +1,4 @@
-name: Win-Ngrok
+name: Win-Bore
 
 on:
   workflow_dispatch:
@@ -11,64 +11,74 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
+    # 1. إعداد وتفعيل RDP
     - name: Enable Remote Desktop
       shell: pwsh
       run: |
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" fDenyTSConnections 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" UserAuthentication 1
+        
+        # تعيين كلمة المرور
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    - name: Setup and Run Ngrok
-      env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+    # 2. تحميل وتشغيل Bore بدلاً من Ngrok
+    - name: Setup and Run Bore
       shell: pwsh
       run: |
-        # 1. التحقق من وجود التوكن
-        if (-not $env:NGROK_AUTH_TOKEN) {
-            Write-Error "Error: NGROK_AUTH_TOKEN secret is missing!"
-            exit 1
-        }
-
-        # 2. تحميل Ngrok
-        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
-        Expand-Archive ngrok.zip -DestinationPath .
+        # تحميل الأداة
+        Invoke-WebRequest https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip -OutFile bore.zip
+        Expand-Archive bore.zip -DestinationPath .
         
-        # 3. إعداد التوكن
-        .\ngrok.exe config add-authtoken $env:NGROK_AUTH_TOKEN
-
-        # 4. تشغيل Ngrok مع حفظ السجلات في ملف لمعرفة سبب الخطأ
-        # نستخدم Start-Process لتشغيله في الخلفية وتسجيل الأخطاء
-        Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" -RedirectStandardOutput "ngrok_log.txt" -RedirectStandardError "ngrok_error.txt" -WindowStyle Hidden
+        # تشغيل الأداة وتوجيه منفذ 3389 (RDP)
+        # نقوم بتشغيلها في الخلفية وتخزين المخرجات في ملف لاستخراج المنفذ لاحقاً
+        Start-Process -FilePath ".\bore.exe" -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore_log.txt" -WindowStyle Hidden
         
-        Write-Host "Ngrok started... waiting for connection..."
-        Start-Sleep -Seconds 10
+        Write-Host "Bore started... getting connection URL..."
+        Start-Sleep -Seconds 5
 
-    - name: Get Connection Info (Debug Mode)
+    # 3. جلب وطباعة عنوان الاتصال
+    - name: Get Connection Info
       shell: pwsh
       run: |
         try {
-            # محاولة جلب الرابط
-            $tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels" -ErrorAction Stop
-            $url = $tunnels.tunnels[0].public_url
-            $cleanUrl = $url -replace "tcp://", ""
-            
-            Write-Host "=============================================" -ForegroundColor Green
-            Write-Host " CONNECT TO:  $cleanUrl " -ForegroundColor Yellow
-            Write-Host " USER/PASS:   runneradmin / Admin@12345 " -ForegroundColor Yellow
-            Write-Host "=============================================" -ForegroundColor Green
+            # قراءة الملف للبحث عن المنفذ الذي تم تعيينه
+            $logContent = Get-Content "bore_log.txt" -Raw
+            if ($logContent -match "listening at bore.pub:(\d+)") {
+                $port = $matches[1]
+                
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host " CONNECT TO:   bore.pub:$port " -ForegroundColor Yellow
+                Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
+                Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
+                Write-Host "=============================================" -ForegroundColor Green
+            } else {
+                Write-Host "Waiting for Bore to generate URL..." -ForegroundColor Cyan
+                # محاولة ثانية في حال تأخر الاتصال
+                Start-Sleep -Seconds 5
+                $logContent = Get-Content "bore_log.txt" -Raw
+                if ($logContent -match "listening at bore.pub:(\d+)") {
+                    $port = $matches[1]
+                    Write-Host "=============================================" -ForegroundColor Green
+                    Write-Host " CONNECT TO:   bore.pub:$port " -ForegroundColor Yellow
+                    Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
+                    Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
+                    Write-Host "=============================================" -ForegroundColor Green
+                } else {
+                     Write-Error "Could not find port in logs. Check bore_log.txt"
+                     Get-Content "bore_log.txt"
+                }
+            }
         } catch {
-            Write-Host "❌ Failed to get Ngrok URL. Showing logs:" -ForegroundColor Red
-            
-            # قراءة ملف السجلات لمعرفة سبب المشكلة
-            Write-Host "--- NGROK LOGS ---" -ForegroundColor Cyan
-            if (Test-Path "ngrok_log.txt") { Get-Content "ngrok_log.txt" }
-            if (Test-Path "ngrok_error.txt") { Get-Content "ngrok_error.txt" }
-            Write-Host "------------------" -ForegroundColor Cyan
+            Write-Host "Error reading logs." -ForegroundColor Red
         }
 
+    # 4. إبقاء الجلسة حية
     - name: Keep Session Alive
       shell: pwsh
       run: |
-        while ($true) { Start-Sleep -Seconds 300 }
+        Write-Host "Session is active. Press Cancel Workflow to stop."
+        while ($true) {
+          Start-Sleep -Seconds 300
+        }
