@@ -1,4 +1,4 @@
-name: Win-CF-Smart
+name: Win-Final-CMD
 
 on:
   workflow_dispatch:
@@ -21,42 +21,46 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare + الماسح الذكي للبورت
-    - name: Start Tunnel & Scan for Port
+    # 2. تشغيل Cloudflare (باستخدام CMD لضمان كتابة السجل)
+    - name: Start Tunnel & Extract Info
       shell: pwsh
       run: |
         Write-Host "Downloading Cloudflare..."
         Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        Write-Host "Starting Cloudflare Tunnel..."
-        # تشغيل البرنامج مع تفعيل الـ Metrics API
-        $args = "tunnel --url tcp://localhost:3389 --metrics localhost:45678"
-        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList $args -WindowStyle Hidden
+        Write-Host "Starting Tunnel using CMD redirection..."
+        
+        # الحيلة هنا: استخدام cmd.exe لتشغيل البرنامج وتوجيه الأخطاء (2>) للملف
+        # هذا يضمن أن الملف يكتب فوراً ولا يكون فارغاً
+        $argument = "/c .\cloudflared.exe tunnel --url tcp://localhost:3389 2> tunnel.log"
+        Start-Process -FilePath "cmd.exe" -ArgumentList $argument -WindowStyle Hidden
 
-        # انتظار 15 ثانية لضمان عمل السيرفر
-        Start-Sleep -Seconds 15
+        # انتظار 10 ثواني
+        Start-Sleep -Seconds 10
         
         $urlFound = $false
         $retryCount = 0
         
         # حلقة البحث (لمدة دقيقة)
         while ($retryCount -lt 60) {
-            try {
-                # جلب البيانات الخام من Cloudflare
-                $response = Invoke-RestMethod -Uri "http://localhost:45678/quicktunnel" -ErrorAction Stop
-                
-                # تحويل الاستجابة بالكامل لنص للبحث بداخلها (أضمن طريقة)
-                $jsonString = $response | ConvertTo-Json -Depth 5 -Compress
-                
-                # البحث عن نمط الرابط tcp://host:port
-                if ($jsonString -match "tcp://([-a-zA-Z0-9\.]+):([0-9]+)") {
+            if (Test-Path "tunnel.log") {
+                # قراءة الملف بطريقة تسمح بالمشاركة (تجاوز قفل الملفات)
+                $stream = [System.IO.File]::Open("tunnel.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                $reader = New-Object System.IO.StreamReader($stream)
+                $logContent = $reader.ReadToEnd()
+                $reader.Close()
+                $stream.Close()
+
+                # البحث عن النمط tcp://url:port
+                if ($logContent -match "tcp://([-a-zA-Z0-9\.]+):([0-9]+)") {
                     $hostUrl = $matches[1]
                     $portNum = $matches[2]
 
                     Write-Host "=============================================" -ForegroundColor Green
-                    Write-Host "        SUCCESS! Tunnel is Active            " -ForegroundColor Green
+                    Write-Host "       SUCCESS! Tunnel is Active             " -ForegroundColor Green
                     Write-Host "=============================================" -ForegroundColor Green
                     
+                    # طباعة النتائج بشكل منفصل وواضح
                     Write-Host " HOST (COMPUTER):  $hostUrl " -ForegroundColor Cyan
                     Write-Host " PORT:             $portNum " -ForegroundColor Magenta
                     Write-Host " "
@@ -64,16 +68,9 @@ jobs:
                     Write-Host " PASSWORD:         Admin@12345 " -ForegroundColor Yellow
                     Write-Host "=============================================" -ForegroundColor Green
                     
-                    # طباعة العنوان الكامل للنسخ السريع
-                    Write-Host " FULL ADDRESS:     $hostUrl`:$portNum " -ForegroundColor White
-                    Write-Host "=============================================" -ForegroundColor Green
-                    
                     $urlFound = $true
                     break
                 }
-            }
-            catch {
-                # انتظار السيرفر حتى يعمل
             }
             
             Write-Host -NoNewline "."
@@ -82,8 +79,8 @@ jobs:
         }
 
         if (-not $urlFound) {
-            Write-Error "Failed to extract port. Dumping raw API response for debugging:"
-            try { Invoke-RestMethod -Uri "http://localhost:45678/quicktunnel" } catch { Write-Host "API not reachable" }
+            Write-Error "Failed to extract port. Dumping log file content:"
+            if (Test-Path "tunnel.log") { Get-Content "tunnel.log" }
             exit 1
         }
 
