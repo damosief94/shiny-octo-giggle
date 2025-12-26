@@ -1,4 +1,4 @@
-name: Win-RDP-Bore-Free
+name: Win-RDP-Pinggy-Final
 
 on: 
   workflow_dispatch:
@@ -18,47 +18,41 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-        # 2. تفعيل RDP
+        # 2. تفعيل RDP والجدار الناري
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
         Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name "InactivityTimeoutSecs" -Value 0 -Force
 
-    - name: Start Bore Tunnel
+    - name: Start Pinggy Tunnel
       shell: pwsh
       run: |
-        Write-Host "Downloading Bore..."
-        # تحميل الأداة (حجمها صغير جداً)
-        Invoke-WebRequest "https://github.com/justin/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "bore.zip"
-        Expand-Archive bore.zip -DestinationPath .
+        Write-Host "Connecting to Pinggy..."
         
-        Write-Host "Starting Tunnel..."
-        # تشغيل النفق وربط بورت 3389 (RDP) بالسيرفر العام
-        # يتم حفظ المخرجات في ملف لاستخراج الرابط منه
-        $proc = Start-Process -FilePath ".\bore.exe" -ArgumentList "local 3389 --to bore.pub" -PassThru -RedirectStandardOutput "bore_log.txt"
+        # تشغيل SSH Tunnel في الخلفية وحفظ المخرجات في ملف
+        # نستخدم tcp@a.pinggy.io للحصول على رابط TCP مباشر
+        $proc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io" -PassThru -RedirectStandardOutput "pinggy_log.txt" -RedirectStandardError "pinggy_error.txt" -WindowStyle Hidden
         
-        # الانتظار 5 ثواني لضمان الاتصال
-        Start-Sleep -Seconds 5
+        # الانتظار 10 ثواني لضمان إنشاء الرابط
+        Start-Sleep -Seconds 10
         
-        # قراءة الملف واستخراج البورت
-        $logContent = Get-Content "bore_log.txt"
+        # قراءة الملف واستخراج الرابط
+        $logContent = Get-Content "pinggy_log.txt" -ErrorAction SilentlyContinue
         
         Write-Host "==========================================" -ForegroundColor Green
         
-        if ($logContent -match "listening at") {
-            # استخراج البورت من النص
-            $port = $logContent | Select-String -Pattern "bore.pub:(\d+)" | ForEach-Object { $_.Matches.Groups[1].Value }
-            
-            if ($port) {
-                Write-Host "YOUR RDP ADDRESS IS:" -ForegroundColor Cyan
-                Write-Host "bore.pub:$port" -ForegroundColor Yellow
-            } else {
-                Write-Host "Connected but could not parse port. Check logs below." -ForegroundColor Red
-                Get-Content "bore_log.txt"
-            }
+        # البحث عن الرابط داخل السطور
+        $urlLine = $logContent | Select-String "tcp://"
+        
+        if ($urlLine) {
+            Write-Host "YOUR RDP ADDRESS IS:" -ForegroundColor Cyan
+            # تنظيف الرابط ليظهر بشكل نظيف
+            $cleanUrl = $urlLine.ToString() -replace ".*(tcp://.*)", '$1'
+            Write-Host $cleanUrl -ForegroundColor Yellow
         } else {
-            Write-Host "Retrying to read logs..." -ForegroundColor Red
-            Get-Content "bore_log.txt"
+            Write-Host "URL not found immediately. Checking raw output:" -ForegroundColor Red
+            Get-Content "pinggy_log.txt"
+            Get-Content "pinggy_error.txt"
         }
         
         Write-Host "User: runneradmin"
