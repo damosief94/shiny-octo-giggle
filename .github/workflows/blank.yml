@@ -1,4 +1,4 @@
-name: Win-Final-CMD-Fix
+name: Win-Final-LogFile
 
 on:
   workflow_dispatch:
@@ -21,32 +21,37 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare (باستخدام CMD لضمان الكتابة الفورية)
-    - name: Start Cloudflare Tunnel
-      shell: cmd
-      run: |
-        curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
-        echo Starting Tunnel...
-        start /B cloudflared.exe tunnel --url tcp://localhost:3389 > tunnel.log 2>&1
-        timeout /t 15
-
-    # 3. قراءة الرابط وفصل البورت (باستخدام PowerShell)
-    - name: Get Host and Port
+    # 2. تشغيل Cloudflare (الحل: استخدام --logfile المدمج)
+    - name: Start Tunnel & Get Info
       shell: pwsh
       run: |
+        Write-Host "Downloading Cloudflare..."
+        Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
+        
+        Write-Host "Starting Tunnel..."
+        
+        # الحل الجذري: نطلب من Cloudflare الكتابة في الملف بنفسه
+        # لا نستخدم > ولا cmd، بل نستخدم Start-Process النظيف
+        $args = "tunnel --url tcp://localhost:3389 --logfile cloudflared.log"
+        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList $args -WindowStyle Hidden
+
+        # انتظار 15 ثانية للتأكد من بدء الاتصال
+        Start-Sleep -Seconds 15
+        
         $urlFound = $false
         $retryCount = 0
         
-        while ($retryCount -lt 30) {
-            if (Test-Path "tunnel.log") {
-                # قراءة الملف (حتى لو كان مفتوحاً)
-                $stream = [System.IO.File]::Open("tunnel.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        # حلقة البحث
+        while ($retryCount -lt 60) {
+            if (Test-Path "cloudflared.log") {
+                # قراءة الملف بطريقة آمنة جداً (تسمح بالمشاركة)
+                $stream = [System.IO.File]::Open("cloudflared.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
                 $reader = New-Object System.IO.StreamReader($stream)
                 $logContent = $reader.ReadToEnd()
                 $reader.Close()
                 $stream.Close()
 
-                # البحث عن الرابط بصيغة tcp://url:port
+                # البحث عن الرابط والبورت بدقة
                 if ($logContent -match "tcp://([-a-zA-Z0-9]+\.trycloudflare\.com):([0-9]+)") {
                     $hostUrl = $matches[1]
                     $portNum = $matches[2]
@@ -54,28 +59,31 @@ jobs:
                     Write-Host "=============================================" -ForegroundColor Green
                     Write-Host "       SUCCESS! Tunnel is Active             " -ForegroundColor Green
                     Write-Host "=============================================" -ForegroundColor Green
-                    Write-Host " HOST:         $hostUrl " -ForegroundColor Cyan
-                    Write-Host " PORT:         $portNum " -ForegroundColor Magenta
+                    
+                    Write-Host " HOST (COMPUTER):  $hostUrl " -ForegroundColor Cyan
+                    Write-Host " PORT:             $portNum " -ForegroundColor Magenta
                     Write-Host " "
-                    Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
-                    Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
+                    Write-Host " USERNAME:         runneradmin " -ForegroundColor Yellow
+                    Write-Host " PASSWORD:         Admin@12345 " -ForegroundColor Yellow
                     Write-Host "=============================================" -ForegroundColor Green
                     
                     $urlFound = $true
                     break
                 }
             }
+            
+            Write-Host -NoNewline "."
             Start-Sleep -Seconds 2
             $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Could not find URL. Showing raw logs:"
-            if (Test-Path "tunnel.log") { Get-Content "tunnel.log" }
+            Write-Error "Failed to find URL. Dumping log content:"
+            if (Test-Path "cloudflared.log") { Get-Content "cloudflared.log" }
             exit 1
         }
 
-    # 4. إبقاء الجلسة حية
+    # 3. إبقاء الجلسة حية
     - name: Keep Session Alive
       shell: pwsh
       run: |
