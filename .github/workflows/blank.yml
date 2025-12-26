@@ -1,4 +1,4 @@
-name: Win-CF-Direct
+name: Win-Pinggy
 
 on:
   workflow_dispatch:
@@ -21,49 +21,27 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare + استخراج الرابط (الطريقة المباشرة)
-    - name: Start Tunnel & Get URL
+    # 2. تشغيل Pinggy عبر SSH (بدون تحميل برامج)
+    - name: Start Pinggy Tunnel
       shell: pwsh
       run: |
-        Write-Host "Downloading Cloudflare..."
-        Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
+        Write-Host "Starting SSH Tunnel to Pinggy..."
         
-        # التأكد من حجم الملف
-        if ((Get-Item cloudflared.exe).Length -lt 1000) {
-            Write-Error "Download failed!"
-            exit 1
-        }
+        # تشغيل SSH وتوجيه كل المخرجات لملف نصي
+        # نستخدم tcp@a.pinggy.io للحصول على نفق TCP
+        $proc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io" -RedirectStandardOutput "pinggy.log" -RedirectStandardError "pinggy.log" -PassThru -WindowStyle Hidden
 
-        Write-Host "Starting Cloudflare Tunnel in Background..."
-        
-        # نستخدم Start-Process مع RedirectStandardError لأن الرابط يظهر في الأخطاء
-        # هذه الطريقة لا تستخدم CMD وبالتالي لا تعلق ولا تؤخر الكتابة في الملف
-        $process = Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "tunnel.log" -PassThru -WindowStyle Hidden
-
-        # انتظار قليل للتأكد من بدء العملية
-        Start-Sleep -Seconds 5
-        
-        # فحص سريع: هل توقف البرنامج فوراً؟
-        if ($process.HasExited) {
-            Write-Error "Cloudflare stopped immediately. Checking logs..."
-            if (Test-Path "tunnel.log") { Get-Content "tunnel.log" }
-            exit 1
-        }
+        # الانتظار قليلاً حتى يتم إنشاء الرابط
+        Start-Sleep -Seconds 10
 
         $urlFound = $false
         $retryCount = 0
-        
-        # محاولة البحث عن الرابط لمدة دقيقة
-        while ($retryCount -lt 60) {
-            if (Test-Path "tunnel.log") {
-                # قراءة الملف بطريقة تسمح بالمشاركة (لتجنب Locking)
-                $stream = [System.IO.File]::Open("tunnel.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                $reader = New-Object System.IO.StreamReader($stream)
-                $logContent = $reader.ReadToEnd()
-                $reader.Close()
-                $stream.Close()
 
-                if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
+        while ($retryCount -lt 30) {
+            if (Test-Path "pinggy.log") {
+                $logContent = Get-Content "pinggy.log" -Raw
+                # البحث عن الرابط بصيغة tcp://...
+                if ($logContent -match "tcp://[a-z0-9\.-]+:[0-9]+") {
                     $rawUrl = $matches[0]
                     $cleanUrl = $rawUrl -replace "tcp://", ""
                     
@@ -76,20 +54,18 @@ jobs:
                     break
                 }
             }
-            
             Write-Host -NoNewline "."
             Start-Sleep -Seconds 2
             $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Could not find URL inside logs. Dumping log content:"
-            if (Test-Path "tunnel.log") { Get-Content "tunnel.log" }
-            exit 1
+            Write-Error "Could not find URL. Logs:"
+            if (Test-Path "pinggy.log") { Get-Content "pinggy.log" }
         }
 
-        # حلقة إبقاء الجلسة حية
-        Write-Host "Session is ready! Do not cancel this workflow."
+        # 3. إبقاء الجلسة حية
+        Write-Host "Session is running..."
         while ($true) {
             Start-Sleep -Seconds 60
             Write-Host -NoNewline "."
