@@ -1,4 +1,4 @@
-name: Win-Bore
+name: Win-Serveo
 
 on:
   workflow_dispatch:
@@ -11,67 +11,64 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 1. إعداد وتفعيل RDP
+    # 1. إعداد وتفعيل RDP (مع فتح الجدار الناري بشكل مؤكد)
     - name: Enable Remote Desktop
       shell: pwsh
       run: |
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" fDenyTSConnections 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        # فتح المنفذ 3389 بشكل صريح في الجدار الناري
+        New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" UserAuthentication 1
         
         # تعيين كلمة المرور
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تحميل وتشغيل Bore بدلاً من Ngrok
-    - name: Setup and Run Bore
+    # 2. تشغيل نفق Serveo (بديل Bore و Ngrok)
+    - name: Start Serveo Tunnel
       shell: pwsh
       run: |
-        # تحميل الأداة
-        Invoke-WebRequest https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-pc-windows-msvc.zip -OutFile bore.zip
-        Expand-Archive bore.zip -DestinationPath .
+        # تشغيل SSH Tunnel في الخلفية وتوجيه المخرجات لملف log
+        # الخيار StrictHostKeyChecking=no يمنع توقف السكربت للسؤال عن البصمة
+        Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net" -RedirectStandardOutput "serveo.log" -RedirectStandardError "serveo_err.log" -WindowStyle Hidden
         
-        # تشغيل الأداة وتوجيه منفذ 3389 (RDP)
-        # نقوم بتشغيلها في الخلفية وتخزين المخرجات في ملف لاستخراج المنفذ لاحقاً
-        Start-Process -FilePath ".\bore.exe" -ArgumentList "local 3389 --to bore.pub" -RedirectStandardOutput "bore_log.txt" -WindowStyle Hidden
-        
-        Write-Host "Bore started... getting connection URL..."
-        Start-Sleep -Seconds 5
+        Write-Host "Tunnel is starting... waiting for URL..."
+        Start-Sleep -Seconds 10
 
-    # 3. جلب وطباعة عنوان الاتصال
+    # 3. جلب وطباعة رابط الاتصال
     - name: Get Connection Info
       shell: pwsh
       run: |
         try {
-            # قراءة الملف للبحث عن المنفذ الذي تم تعيينه
-            $logContent = Get-Content "bore_log.txt" -Raw
-            if ($logContent -match "listening at bore.pub:(\d+)") {
-                $port = $matches[1]
-                
+            # قراءة ملف السجلات لاستخراج الرابط
+            # المخرج المتوقع: Forwarding TCP traffic from serveo.net:12345
+            $log = Get-Content "serveo.log" -Raw
+            if (-not $log) { $log = Get-Content "serveo_err.log" -Raw }
+            
+            if ($log -match "serveo.net:[0-9]+") {
+                $url = $matches[0]
                 Write-Host "=============================================" -ForegroundColor Green
-                Write-Host " CONNECT TO:   bore.pub:$port " -ForegroundColor Yellow
+                Write-Host " CONNECT TO:   $url " -ForegroundColor Yellow
                 Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
                 Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
                 Write-Host "=============================================" -ForegroundColor Green
             } else {
-                Write-Host "Waiting for Bore to generate URL..." -ForegroundColor Cyan
-                # محاولة ثانية في حال تأخر الاتصال
+                Write-Error "Could not find URL yet. Retrying..."
                 Start-Sleep -Seconds 5
-                $logContent = Get-Content "bore_log.txt" -Raw
-                if ($logContent -match "listening at bore.pub:(\d+)") {
-                    $port = $matches[1]
-                    Write-Host "=============================================" -ForegroundColor Green
-                    Write-Host " CONNECT TO:   bore.pub:$port " -ForegroundColor Yellow
-                    Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
-                    Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
-                    Write-Host "=============================================" -ForegroundColor Green
+                $log = Get-Content "serveo.log" -Raw
+                if ($log -match "serveo.net:[0-9]+") {
+                     $url = $matches[0]
+                     Write-Host "=============================================" -ForegroundColor Green
+                     Write-Host " CONNECT TO:   $url " -ForegroundColor Yellow
+                     Write-Host "=============================================" -ForegroundColor Green
                 } else {
-                     Write-Error "Could not find port in logs. Check bore_log.txt"
-                     Get-Content "bore_log.txt"
+                     Write-Error "Check logs below:"
+                     Get-Content "serveo.log"
+                     Get-Content "serveo_err.log"
                 }
             }
         } catch {
-            Write-Host "Error reading logs." -ForegroundColor Red
+            Write-Error "Error reading connection logs."
         }
 
     # 4. إبقاء الجلسة حية
