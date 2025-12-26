@@ -1,4 +1,4 @@
-name: Win-Cloudflare
+name: Win-Cloudflare-Fixed
 
 on:
   workflow_dispatch:
@@ -11,46 +11,51 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 1. إعداد وتفعيل RDP (إعدادات قوية للجدار الناري)
+    # 1. إعداد وتفعيل RDP
     - name: Enable Remote Desktop
       shell: pwsh
       run: |
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" fDenyTSConnections 0
         New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" UserAuthentication 1
-        
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تحميل وتشغيل Cloudflare Tunnel
+    # 2. تحميل وتشغيل Cloudflare Tunnel (طريقة cmd القوية)
     - name: Start Cloudflare Tunnel
       shell: pwsh
       run: |
         # تحميل الأداة
         Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        # تشغيل النفق وتوجيه المخرجات لملف log
-        # Cloudflare يطبع المعلومات في StandardError وليس StandardOutput
-        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "cloudflared.log" -WindowStyle Hidden
+        # التأكد من أن الملف تم تحميله
+        if ((Get-Item cloudflared.exe).Length -lt 1000) {
+            Write-Error "File download failed or file is corrupted."
+            exit 1
+        }
+
+        # تشغيل النفق باستخدام CMD لضمان حفظ السجلات
+        # هذا الأمر يوجه كل المخرجات (الأخطاء والنجاح) إلى ملف واحد
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c .\cloudflared.exe tunnel --url tcp://localhost:3389 > cloudflared.log 2>&1" -WindowStyle Hidden
         
-        Write-Host "Cloudflare Tunnel starting... waiting for URL..."
+        Write-Host "Cloudflare Tunnel started via CMD... waiting for URL..."
         Start-Sleep -Seconds 10
 
     # 3. جلب وطباعة رابط الاتصال
     - name: Get Connection Info
       shell: pwsh
       run: |
-        $maxRetries = 20
+        $maxRetries = 200
         $retryCount = 0
         $urlFound = $false
 
         while ($retryCount -lt $maxRetries) {
             if (Test-Path "cloudflared.log") {
                 $logContent = Get-Content "cloudflared.log" -Raw
-                # البحث عن الرابط بصيغة tcp://....trycloudflare.com:port
+                
+                # البحث عن الرابط
                 if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
                     $rawUrl = $matches[0]
-                    # إزالة tcp:// للحصول على العنوان الصافي
                     $cleanUrl = $rawUrl -replace "tcp://", ""
                     
                     Write-Host "=============================================" -ForegroundColor Green
@@ -62,14 +67,20 @@ jobs:
                     break
                 }
             }
-            Write-Host "Waiting for URL generation... ($retryCount/$maxRetries)"
-            Start-Sleep -Seconds 5
+            
+            # طباعة نقطة كل ثانية للدلالة على الانتظار
+            Write-Host -NoNewline "."
+            Start-Sleep -Seconds 2
             $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Failed to find Cloudflare URL. Showing logs:"
-            if (Test-Path "cloudflared.log") { Get-Content "cloudflared.log" }
+            Write-Error "Failed to find Cloudflare URL. Dumping log content:"
+            if (Test-Path "cloudflared.log") { 
+                Get-Content "cloudflared.log" 
+            } else {
+                Write-Error "Log file does not exist! The process failed to start."
+            }
         }
 
     # 4. إبقاء الجلسة حية
