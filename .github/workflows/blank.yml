@@ -1,4 +1,4 @@
-name: Win-Pinggy
+name: Win-Final-CF
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 1. إعداد وتفعيل RDP
+    # 1. إعداد وتفعيل RDP (نفس إعداداتك الناجحة السابقة)
     - name: Enable Remote Desktop
       shell: pwsh
       run: |
@@ -21,27 +21,42 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Pinggy عبر SSH (بدون تحميل برامج)
-    - name: Start Pinggy Tunnel
+    # 2. تشغيل Cloudflare (الكود المصحح بدون أخطاء التوجيه)
+    - name: Start Cloudflare Tunnel
       shell: pwsh
       run: |
-        Write-Host "Starting SSH Tunnel to Pinggy..."
+        Write-Host "Downloading Cloudflare..."
+        Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        # تشغيل SSH وتوجيه كل المخرجات لملف نصي
-        # نستخدم tcp@a.pinggy.io للحصول على نفق TCP
-        $proc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io" -RedirectStandardOutput "pinggy.log" -RedirectStandardError "pinggy.log" -PassThru -WindowStyle Hidden
+        Write-Host "Starting Tunnel..."
+        # هنا الحل: نوجه الأخطاء فقط لملف السجل لأن الرابط يظهر هناك
+        # ونترك المخرجات العادية تذهب للفراغ لتجنب تضارب الملفات
+        $process = Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "tunnel.log" -PassThru -WindowStyle Hidden
 
-        # الانتظار قليلاً حتى يتم إنشاء الرابط
+        # انتظار 10 ثواني لضمان إنشاء الرابط
         Start-Sleep -Seconds 10
+        
+        # التأكد أن البرنامج لم يتوقف
+        if ($process.HasExited) {
+            Write-Error "Cloudflare stopped unexpectedly!"
+            if (Test-Path "tunnel.log") { Get-Content "tunnel.log" }
+            exit 1
+        }
 
+        # قراءة الملف واستخراج الرابط
         $urlFound = $false
         $retryCount = 0
+        
+        while ($retryCount -lt 20) {
+            if (Test-Path "tunnel.log") {
+                # قراءة الملف بطريقة آمنة (Shared Read) لتجنب مشكلة الملف المقفول
+                $stream = [System.IO.File]::Open("tunnel.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                $reader = New-Object System.IO.StreamReader($stream)
+                $logContent = $reader.ReadToEnd()
+                $reader.Close()
+                $stream.Close()
 
-        while ($retryCount -lt 30) {
-            if (Test-Path "pinggy.log") {
-                $logContent = Get-Content "pinggy.log" -Raw
-                # البحث عن الرابط بصيغة tcp://...
-                if ($logContent -match "tcp://[a-z0-9\.-]+:[0-9]+") {
+                if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
                     $rawUrl = $matches[0]
                     $cleanUrl = $rawUrl -replace "tcp://", ""
                     
@@ -54,19 +69,21 @@ jobs:
                     break
                 }
             }
-            Write-Host -NoNewline "."
             Start-Sleep -Seconds 2
             $retryCount++
         }
 
         if (-not $urlFound) {
             Write-Error "Could not find URL. Logs:"
-            if (Test-Path "pinggy.log") { Get-Content "pinggy.log" }
+            Get-Content "tunnel.log"
+            exit 1
         }
 
-        # 3. إبقاء الجلسة حية
+    # 3. إبقاء الجلسة حية
+    - name: Keep Session Alive
+      shell: pwsh
+      run: |
         Write-Host "Session is running..."
         while ($true) {
-            Start-Sleep -Seconds 60
-            Write-Host -NoNewline "."
+          Start-Sleep -Seconds 300
         }
