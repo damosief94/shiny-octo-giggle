@@ -1,87 +1,69 @@
-name: Win-RDP-Zrok-Final
+name: Win-RDP-Bore-Free
 
 on: 
   workflow_dispatch:
 
 jobs:
-  zrok-session:
+  rdp-session:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout Repository
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup User & RDP Configuration
+    - name: Setup User & RDP
       shell: pwsh
       run: |
-        # إعداد المستخدم وكلمة المرور
+        # 1. إعداد المستخدم وكلمة المرور
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-        # تفعيل RDP
+        # 2. تفعيل RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
-        
-        # منع قفل الشاشة
         Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name "InactivityTimeoutSecs" -Value 0 -Force
 
-    - name: Install & Configure Zrok (Fixed)
-      shell: pwsh
-      env:
-        ZROK_TOKEN: ${{ secrets.ZROK_TOKEN }}
-      run: |
-        # 1. التحميل باستخدام الرابط الذي وجدته أنت
-        $url = "https://github.com/openziti/zrok/releases/download/v1.1.10/zrok_1.1.10_windows_amd64.tar.gz"
-        Write-Host "Downloading Zrok from: $url"
-        Invoke-WebRequest $url -OutFile "zrok.tar.gz"
-        
-        # 2. فك الضغط (استخدام tar بدلاً من Expand-Archive لأنه ملف tar.gz)
-        Write-Host "Extracting..."
-        tar -xf zrok.tar.gz
-        
-        # 3. البحث عن ملف zrok.exe ونقله لمكان معروف
-        $zrokPath = Get-ChildItem -Path . -Recurse -Filter "zrok.exe" | Select-Object -First 1
-        
-        if ($null -eq $zrokPath) {
-            Write-Error "Could not find zrok.exe after extraction!"
-            exit 1
-        }
-
-        Move-Item -Path $zrokPath.FullName -Destination "$env:USERPROFILE\zrok.exe"
-        Write-Host "Zrok installed successfully at $env:USERPROFILE\zrok.exe"
-        
-        # 4. تفعيل الحساب
-        & "$env:USERPROFILE\zrok.exe" enable $env:ZROK_TOKEN
-        Write-Host "Zrok Enabled Successfully!"
-
-    - name: Start Zrok Tunnel & Show Link
+    - name: Start Bore Tunnel
       shell: pwsh
       run: |
-        Write-Host "Starting Zrok Tunnel..."
+        Write-Host "Downloading Bore..."
+        # تحميل الأداة (حجمها صغير جداً)
+        Invoke-WebRequest "https://github.com/justin/bore/releases/download/v0.5.2/bore-v0.5.2-x86_64-pc-windows-msvc.zip" -OutFile "bore.zip"
+        Expand-Archive bore.zip -DestinationPath .
         
-        # تشغيل النفق
-        $proc = Start-Process -FilePath "$env:USERPROFILE\zrok.exe" -ArgumentList "share public 127.0.0.1:3389 --backend-mode tcpTunnel --headless" -PassThru -RedirectStandardOutput "$env:USERPROFILE\zrok_log.txt"
+        Write-Host "Starting Tunnel..."
+        # تشغيل النفق وربط بورت 3389 (RDP) بالسيرفر العام
+        # يتم حفظ المخرجات في ملف لاستخراج الرابط منه
+        $proc = Start-Process -FilePath ".\bore.exe" -ArgumentList "local 3389 --to bore.pub" -PassThru -RedirectStandardOutput "bore_log.txt"
         
-        # الانتظار 15 ثانية حتى يتم الاتصال
-        Start-Sleep -Seconds 15
+        # الانتظار 5 ثواني لضمان الاتصال
+        Start-Sleep -Seconds 5
         
-        # قراءة الرابط
-        $logContent = Get-Content "$env:USERPROFILE\zrok_log.txt"
-        $urlLine = $logContent | Select-String "tcp://"
+        # قراءة الملف واستخراج البورت
+        $logContent = Get-Content "bore_log.txt"
         
-        Write-Host "=============================================" -ForegroundColor Green
-        if ($urlLine) {
-            Write-Host "YOUR RDP ADDRESS IS:" -ForegroundColor Cyan
-            $cleanUrl = $urlLine.ToString().Split(" ")[-1]
-            Write-Host $cleanUrl -ForegroundColor Yellow
+        Write-Host "==========================================" -ForegroundColor Green
+        
+        if ($logContent -match "listening at") {
+            # استخراج البورت من النص
+            $port = $logContent | Select-String -Pattern "bore.pub:(\d+)" | ForEach-Object { $_.Matches.Groups[1].Value }
+            
+            if ($port) {
+                Write-Host "YOUR RDP ADDRESS IS:" -ForegroundColor Cyan
+                Write-Host "bore.pub:$port" -ForegroundColor Yellow
+            } else {
+                Write-Host "Connected but could not parse port. Check logs below." -ForegroundColor Red
+                Get-Content "bore_log.txt"
+            }
         } else {
-            Write-Host "Could not find URL yet. Printing Logs:" -ForegroundColor Red
-            Get-Content "$env:USERPROFILE\zrok_log.txt"
+            Write-Host "Retrying to read logs..." -ForegroundColor Red
+            Get-Content "bore_log.txt"
         }
+        
         Write-Host "User: runneradmin"
         Write-Host "Pass: Admin@12345"
-        Write-Host "============================================="
+        Write-Host "=========================================="
 
     - name: Keep Alive
       shell: pwsh
