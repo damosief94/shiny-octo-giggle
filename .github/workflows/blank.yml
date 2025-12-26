@@ -1,4 +1,4 @@
-name: Win-CF-API-Method
+name: Win-Pinggy-Fixed
 
 on:
   workflow_dispatch:
@@ -21,46 +21,43 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare + جلب الرابط عن طريق API (الطريقة المضمونة)
-    - name: Start Tunnel & Get URL via API
+    # 2. تشغيل Pinggy (تم إصلاح خطأ توجيه الملفات)
+    - name: Start Tunnel & Get URL
       shell: pwsh
       run: |
-        Write-Host "Downloading Cloudflare..."
-        Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
+        Write-Host "Starting SSH Tunnel to Pinggy..."
         
-        Write-Host "Starting Cloudflare Tunnel..."
-        
-        # نشغل البرنامج ونطلب منه فتح منفذ خاص للمقاييس (Metrics) على 45678
-        # هذا يسمح لنا بسحب الرابط مباشرة من النظام دون الحاجة لملفات
-        $args = "tunnel --url tcp://localhost:3389 --metrics localhost:45678"
-        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList $args -WindowStyle Hidden
+        # هنا الإصلاح: فصلنا ملف المخرجات (out.log) عن ملف الأخطاء (err.log)
+        # Pinggy يطبع الرابط عادة في ملف الأخطاء أو المخرجات حسب الحالة
+        $proc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io" -RedirectStandardOutput "out.log" -RedirectStandardError "err.log" -PassThru -WindowStyle Hidden
 
-        # انتظار قليل
+        # انتظار 10 ثواني لضمان الاتصال
         Start-Sleep -Seconds 10
-        
+
         $urlFound = $false
         $retryCount = 0
-        
-        # محاولة سحب الرابط من الـ API الداخلي
-        while ($retryCount -lt 60) {
-            try {
-                # طلب المعلومات من Cloudflare مباشرة
-                $response = Invoke-RestMethod -Uri "http://localhost:45678/quicktunnel" -ErrorAction Stop
+
+        # حلقة البحث عن الرابط في الملفين
+        while ($retryCount -lt 30) {
+            # دمج محتوى الملفين للبحث فيهما
+            $logs = ""
+            if (Test-Path "out.log") { $logs += Get-Content "out.log" -Raw }
+            if (Test-Path "err.log") { $logs += Get-Content "err.log" -Raw }
+
+            # البحث عن نمط الرابط (tcp://.....:port)
+            if ($logs -match "tcp://[a-zA-Z0-9\.-]+:[0-9]+") {
+                $rawUrl = $matches[0]
+                $cleanUrl = $rawUrl -replace "tcp://", ""
                 
-                if ($response -and $response.hostname) {
-                    $cleanUrl = $response.hostname
-                    
-                    Write-Host "=============================================" -ForegroundColor Green
-                    Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
-                    Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
-                    Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
-                    Write-Host "=============================================" -ForegroundColor Green
-                    $urlFound = $true
-                    break
-                }
-            }
-            catch {
-                # نتجاهل الأخطاء حتى يعمل السيرفر
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host " SUCCESS! Tunnel is Ready " -ForegroundColor Green
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
+                Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
+                Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
+                Write-Host "=============================================" -ForegroundColor Green
+                $urlFound = $true
+                break
             }
             
             Write-Host -NoNewline "."
@@ -69,13 +66,18 @@ jobs:
         }
 
         if (-not $urlFound) {
-            Write-Error "Failed to get URL via API. Check if cloudflared is running."
+            Write-Error "Could not find URL. Showing logs:"
+            if (Test-Path "out.log") { Get-Content "out.log" }
+            if (Test-Path "err.log") { Get-Content "err.log" }
             exit 1
         }
 
-        # حلقة إبقاء الجلسة حية
-        Write-Host "Session is ready! Do not cancel this workflow."
+    # 3. إبقاء الجلسة حية
+    - name: Keep Session Alive
+      shell: pwsh
+      run: |
+        Write-Host "Session is active. Press Cancel to stop."
         while ($true) {
-            Start-Sleep -Seconds 60
-            Write-Host -NoNewline "."
+          Start-Sleep -Seconds 60
+          Write-Host -NoNewline "."
         }
