@@ -1,4 +1,4 @@
-name: Win
+name: Win-Ngrok
 
 on:
   workflow_dispatch:
@@ -11,36 +11,63 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Download Playit Agent
-      shell: pwsh
-      run: |
-        $downloadLink = "https://github.com/playit-cloud/playit-agent/releases/download/v0.15.26/playit-windows-x86_64-signed.exe"
-        $outputFile = "$env:USERPROFILE\pl.exe"
-        curl.exe -L $downloadLink -o $outputFile
-        Start-Sleep -Seconds 3
-
+    # 1. إعداد وتفعيل RDP (نفس خطواتك السابقة)
     - name: Enable Remote Desktop
       shell: pwsh
       run: |
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" fDenyTSConnections 0
-        Enable-NetFirewallRule -Group "@FirewallAPI.dll,-28752"
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" UserAuthentication 1
+        
+        # تعيين كلمة المرور للمستخدم (يمكنك تغييرها هنا)
+        $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
+        Set-LocalUser -Name "runneradmin" -Password $password
 
-        $secure = ConvertTo-SecureString "admin@123" -AsPlainText -Force
-        Set-LocalUser -Name "runneradmin" -Password $secure
-
-    - name: Launch Playit Tunnel
+    # 2. تحميل وتشغيل Ngrok
+    - name: Setup and Run Ngrok
       env:
-        KEY: ${{ secrets.PL }}
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
       shell: pwsh
       run: |
-        Start-Process "$env:USERPROFILE\pl.exe" "--secret $env:KEY" -WindowStyle Hidden
-        Start-Sleep -Seconds 4
-        Start-Process "$env:USERPROFILE\pl.exe" -WindowStyle Hidden
+        # تحميل Ngrok
+        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip -OutFile ngrok.zip
+        Expand-Archive ngrok.zip -DestinationPath .
+        
+        # تفعيل التوكن
+        .\ngrok.exe config add-authtoken $env:NGROK_AUTH_TOKEN
+        
+        # تشغيل النفق على منفذ RDP 3389 في الخلفية
+        Start-Process .\ngrok.exe -ArgumentList "tcp 3389" -WindowStyle Hidden
+        
+        # انتظار بضع ثواني حتى يعمل النفق
+        Start-Sleep -Seconds 5
 
+    # 3. جلب وطباعة عنوان الاتصال
+    - name: Get Connection Info
+      shell: pwsh
+      run: |
+        # استخدام واجهة Ngrok المحلية لجلب الرابط العام
+        try {
+            $tunnels = Invoke-RestMethod -Uri "http://localhost:4040/api/tunnels"
+            $url = $tunnels.tunnels[0].public_url
+            
+            # إزالة بادئة tcp:// للحصول على العنوان الصافي
+            $cleanUrl = $url -replace "tcp://", ""
+            
+            Write-Host "=============================================" -ForegroundColor Green
+            Write-Host " CONNECT TO THIS ADDRESS:  $cleanUrl " -ForegroundColor Yellow
+            Write-Host " USERNAME: runneradmin " -ForegroundColor Yellow
+            Write-Host " PASSWORD: Admin@12345 " -ForegroundColor Yellow
+            Write-Host "=============================================" -ForegroundColor Green
+        } catch {
+            Write-Host "Failed to get Ngrok URL. Check if Ngrok is running." -ForegroundColor Red
+        }
+
+    # 4. إبقاء الجلسة حية
     - name: Keep Session Alive
       shell: pwsh
       run: |
+        Write-Host "Session is running. Press Cancel Workflow to stop."
         while ($true) {
           Start-Sleep -Seconds 300
         }
