@@ -1,3 +1,8 @@
+name: Win-Ngrok
+
+on:
+  workflow_dispatch:
+
 jobs:
   rdp-session:
     runs-on: windows-latest
