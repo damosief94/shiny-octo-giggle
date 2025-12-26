@@ -1,4 +1,4 @@
-name: Win-Serveo
+name: Win-Cloudflare
 
 on:
   workflow_dispatch:
@@ -11,64 +11,65 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 1. إعداد وتفعيل RDP (مع فتح الجدار الناري بشكل مؤكد)
+    # 1. إعداد وتفعيل RDP (إعدادات قوية للجدار الناري)
     - name: Enable Remote Desktop
       shell: pwsh
       run: |
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" fDenyTSConnections 0
-        # فتح المنفذ 3389 بشكل صريح في الجدار الناري
         New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow
         Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" UserAuthentication 1
         
-        # تعيين كلمة المرور
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل نفق Serveo (بديل Bore و Ngrok)
-    - name: Start Serveo Tunnel
+    # 2. تحميل وتشغيل Cloudflare Tunnel
+    - name: Start Cloudflare Tunnel
       shell: pwsh
       run: |
-        # تشغيل SSH Tunnel في الخلفية وتوجيه المخرجات لملف log
-        # الخيار StrictHostKeyChecking=no يمنع توقف السكربت للسؤال عن البصمة
-        Start-Process ssh -ArgumentList "-o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net" -RedirectStandardOutput "serveo.log" -RedirectStandardError "serveo_err.log" -WindowStyle Hidden
+        # تحميل الأداة
+        Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        Write-Host "Tunnel is starting... waiting for URL..."
+        # تشغيل النفق وتوجيه المخرجات لملف log
+        # Cloudflare يطبع المعلومات في StandardError وليس StandardOutput
+        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "cloudflared.log" -WindowStyle Hidden
+        
+        Write-Host "Cloudflare Tunnel starting... waiting for URL..."
         Start-Sleep -Seconds 10
 
     # 3. جلب وطباعة رابط الاتصال
     - name: Get Connection Info
       shell: pwsh
       run: |
-        try {
-            # قراءة ملف السجلات لاستخراج الرابط
-            # المخرج المتوقع: Forwarding TCP traffic from serveo.net:12345
-            $log = Get-Content "serveo.log" -Raw
-            if (-not $log) { $log = Get-Content "serveo_err.log" -Raw }
-            
-            if ($log -match "serveo.net:[0-9]+") {
-                $url = $matches[0]
-                Write-Host "=============================================" -ForegroundColor Green
-                Write-Host " CONNECT TO:   $url " -ForegroundColor Yellow
-                Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
-                Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
-                Write-Host "=============================================" -ForegroundColor Green
-            } else {
-                Write-Error "Could not find URL yet. Retrying..."
-                Start-Sleep -Seconds 5
-                $log = Get-Content "serveo.log" -Raw
-                if ($log -match "serveo.net:[0-9]+") {
-                     $url = $matches[0]
-                     Write-Host "=============================================" -ForegroundColor Green
-                     Write-Host " CONNECT TO:   $url " -ForegroundColor Yellow
-                     Write-Host "=============================================" -ForegroundColor Green
-                } else {
-                     Write-Error "Check logs below:"
-                     Get-Content "serveo.log"
-                     Get-Content "serveo_err.log"
+        $maxRetries = 20
+        $retryCount = 0
+        $urlFound = $false
+
+        while ($retryCount -lt $maxRetries) {
+            if (Test-Path "cloudflared.log") {
+                $logContent = Get-Content "cloudflared.log" -Raw
+                # البحث عن الرابط بصيغة tcp://....trycloudflare.com:port
+                if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
+                    $rawUrl = $matches[0]
+                    # إزالة tcp:// للحصول على العنوان الصافي
+                    $cleanUrl = $rawUrl -replace "tcp://", ""
+                    
+                    Write-Host "=============================================" -ForegroundColor Green
+                    Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
+                    Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
+                    Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
+                    Write-Host "=============================================" -ForegroundColor Green
+                    $urlFound = $true
+                    break
                 }
             }
-        } catch {
-            Write-Error "Error reading connection logs."
+            Write-Host "Waiting for URL generation... ($retryCount/$maxRetries)"
+            Start-Sleep -Seconds 5
+            $retryCount++
+        }
+
+        if (-not $urlFound) {
+            Write-Error "Failed to find Cloudflare URL. Showing logs:"
+            if (Test-Path "cloudflared.log") { Get-Content "cloudflared.log" }
         }
 
     # 4. إبقاء الجلسة حية
