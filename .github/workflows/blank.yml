@@ -1,4 +1,4 @@
-name: Win-Pinggy-Fixed
+name: Win-Pinggy-Memory
 
 on:
   workflow_dispatch:
@@ -21,54 +21,48 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Pinggy (تم إصلاح خطأ توجيه الملفات)
+    # 2. تشغيل Pinggy باستخدام الذاكرة (Memory Job) - الحل النهائي
     - name: Start Tunnel & Get URL
       shell: pwsh
       run: |
-        Write-Host "Starting SSH Tunnel to Pinggy..."
+        Write-Host "Starting SSH Tunnel to Pinggy (Job Mode)..."
         
-        # هنا الإصلاح: فصلنا ملف المخرجات (out.log) عن ملف الأخطاء (err.log)
-        # Pinggy يطبع الرابط عادة في ملف الأخطاء أو المخرجات حسب الحالة
-        $proc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io" -RedirectStandardOutput "out.log" -RedirectStandardError "err.log" -PassThru -WindowStyle Hidden
-
-        # انتظار 10 ثواني لضمان الاتصال
-        Start-Sleep -Seconds 10
+        # إنشاء وظيفة في الخلفية (Job) وتشغيل SSH داخلها
+        # الرمز 2>&1 يضمن التقاط كل النصوص سواء كانت أخطاء أو مخرجات
+        $job = Start-Job -ScriptBlock {
+            ssh -o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io 2>&1
+        }
 
         $urlFound = $false
-        $retryCount = 0
-
-        # حلقة البحث عن الرابط في الملفين
-        while ($retryCount -lt 30) {
-            # دمج محتوى الملفين للبحث فيهما
-            $logs = ""
-            if (Test-Path "out.log") { $logs += Get-Content "out.log" -Raw }
-            if (Test-Path "err.log") { $logs += Get-Content "err.log" -Raw }
-
-            # البحث عن نمط الرابط (tcp://.....:port)
-            if ($logs -match "tcp://[a-zA-Z0-9\.-]+:[0-9]+") {
+        
+        # حلقة بحث لمدة 30 ثانية
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            
+            # قراءة المخرجات من الذاكرة مباشرة (بدون ملفات)
+            $output = Receive-Job -Job $job -Keep | Out-String
+            
+            # البحث عن الرابط
+            if ($output -match "tcp://[a-zA-Z0-9\.-]+:[0-9]+") {
                 $rawUrl = $matches[0]
                 $cleanUrl = $rawUrl -replace "tcp://", ""
                 
                 Write-Host "=============================================" -ForegroundColor Green
                 Write-Host " SUCCESS! Tunnel is Ready " -ForegroundColor Green
                 Write-Host "=============================================" -ForegroundColor Green
-                Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
+                Write-Host " RDP ADDRESS:  $cleanUrl " -ForegroundColor Magenta
                 Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
                 Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
                 Write-Host "=============================================" -ForegroundColor Green
+                
                 $urlFound = $true
                 break
             }
-            
-            Write-Host -NoNewline "."
-            Start-Sleep -Seconds 2
-            $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Could not find URL. Showing logs:"
-            if (Test-Path "out.log") { Get-Content "out.log" }
-            if (Test-Path "err.log") { Get-Content "err.log" }
+            Write-Error "Failed to find URL. Dumping raw output from memory:"
+            Receive-Job -Job $job -Keep | Out-String
             exit 1
         }
 
