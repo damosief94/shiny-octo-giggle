@@ -1,4 +1,4 @@
-name: Win-Final-Solution
+name: Win-Final-Snapshot
 
 on:
   workflow_dispatch:
@@ -21,72 +21,71 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare + فصل البورت برمجياً
+    # 2. تشغيل Cloudflare + استخراج البورت بطريقة "النسخ اللحظي"
     - name: Start Tunnel & Get Port
       shell: pwsh
       run: |
         Write-Host "Downloading Cloudflare..."
         Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        Write-Host "Starting Cloudflare Tunnel..."
-        # نشغل البرنامج ونفتح منفذ API داخلي على 45678
-        $args = "tunnel --url tcp://localhost:3389 --metrics localhost:45678"
+        Write-Host "Starting Tunnel..."
+        # نجبر Cloudflare على الكتابة في ملف سجل
+        $args = "tunnel --url tcp://localhost:3389 --logfile cloudflared.log"
         Start-Process -FilePath ".\cloudflared.exe" -ArgumentList $args -WindowStyle Hidden
 
-        # ننتظر 15 ثانية للتأكد من الاتصال
-        Start-Sleep -Seconds 15
+        Write-Host "Waiting for connection..."
+        Start-Sleep -Seconds 10
         
         $urlFound = $false
         $retryCount = 0
         
-        # حلقة المحاولة (تتكرر حتى تجد الرابط)
-        while ($retryCount -lt 60) {
-            try {
-                # طلب المعلومات من النظام مباشرة (ليس من ملف نصي)
-                $response = Invoke-RestMethod -Uri "http://localhost:45678/quicktunnel" -ErrorAction Stop
+        # حلقة البحث (لمدة دقيقة ونصف)
+        while ($retryCount -lt 90) {
+            # الحيلة الذكية: نسخ الملف لقراءته ثم حذفه (تجاوز مشكلة قفل الملفات)
+            if (Test-Path "cloudflared.log") {
+                Copy-Item "cloudflared.log" "temp_read.log" -Force
                 
-                if ($response -and $response.hostname) {
-                    $fullUrl = $response.hostname
-                    # إزالة بادئة tcp://
-                    $cleanUrl = $fullUrl -replace "tcp://", ""
+                if (Test-Path "temp_read.log") {
+                    $logContent = Get-Content "temp_read.log" -Raw
                     
-                    # فصل الرابط عن البورت
-                    if ($cleanUrl -match ":") {
+                    # البحث عن الرابط الكامل (tcp://domain:port)
+                    if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
+                        $fullUrl = $matches[0]
+                        $cleanUrl = $fullUrl -replace "tcp://", ""
+                        
+                        # فصل الرابط عن البورت
                         $parts = $cleanUrl -split ":"
                         $hostUrl = $parts[0]
                         $portNum = $parts[1]
-                    } else {
-                        $hostUrl = $cleanUrl
-                        $portNum = "غير موجود (تأكد من نوع النفق)"
-                    }
 
-                    Write-Host "=============================================" -ForegroundColor Green
-                    Write-Host "        SUCCESS! Tunnel is Active            " -ForegroundColor Green
-                    Write-Host "=============================================" -ForegroundColor Green
-                    
-                    # طباعة المعلومات بشكل منفصل وواضح
-                    Write-Host " HOST (COMPUTER):  $hostUrl " -ForegroundColor Cyan
-                    Write-Host " PORT:             $portNum " -ForegroundColor Magenta
-                    Write-Host " "
-                    Write-Host " USERNAME:         runneradmin " -ForegroundColor Yellow
-                    Write-Host " PASSWORD:         Admin@12345 " -ForegroundColor Yellow
-                    Write-Host "=============================================" -ForegroundColor Green
-                    
-                    $urlFound = $true
-                    break
+                        Write-Host "=============================================" -ForegroundColor Green
+                        Write-Host "        SUCCESS! Tunnel is Active            " -ForegroundColor Green
+                        Write-Host "=============================================" -ForegroundColor Green
+                        Write-Host " HOST:         $hostUrl " -ForegroundColor Cyan
+                        Write-Host " PORT:         $portNum " -ForegroundColor Magenta
+                        Write-Host " "
+                        Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
+                        Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
+                        Write-Host "=============================================" -ForegroundColor Green
+                        
+                        $urlFound = $true
+                        # تنظيف الملف المؤقت قبل الخروج
+                        Remove-Item "temp_read.log" -Force
+                        break
+                    }
+                    # تنظيف الملف المؤقت
+                    Remove-Item "temp_read.log" -Force
                 }
-            }
-            catch {
-                # في حالة لم يعمل السيرفر بعد، ننتظر قليلاً
             }
             
             Write-Host -NoNewline "."
-            Start-Sleep -Seconds 2
+            Start-Sleep -Seconds 1
             $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Failed to retrieve URL from API. Cloudflared might not be running."
+            Write-Error "Could not find URL in logs."
+            if (Test-Path "cloudflared.log") { Get-Content "cloudflared.log" }
             exit 1
         }
 
