@@ -1,87 +1,81 @@
-name: Win-Final-Pinggy
+name: Win-RDP-Zrok
 
-on:
+on: 
   workflow_dispatch:
 
 jobs:
-  rdp-session:
+  zrok-session:
     runs-on: windows-latest
 
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 1. إعداد وتفعيل RDP
-    - name: Enable Remote Desktop
+    - name: Setup User & RDP Configuration
       shell: pwsh
       run: |
-        Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server" fDenyTSConnections 0
-        New-NetFirewallRule -DisplayName "Allow RDP" -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow
-        Set-ItemProperty "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" UserAuthentication 1
+        # 1. تعيين كلمة المرور (يمكنك تغيير Admin@12345)
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Pinggy (تم فصل ملفات السجلات لتجنب الأخطاء السابقة)
-    - name: Start Tunnel & Get Info
+        # 2. تفعيل RDP وفتح الجدار الناري
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
+        
+        # 3. منع قفل الشاشة عند الخمول
+        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name "InactivityTimeoutSecs" -Value 0 -Force
+
+    - name: Install & Configure Zrok
+      shell: pwsh
+      env:
+        ZROK_TOKEN: ${{ secrets.ZROK_TOKEN }}
+      run: |
+        # تحميل Zrok
+        Write-Host "Downloading Zrok..."
+        Invoke-WebRequest "https://github.com/openziti/zrok/releases/download/v0.4.23/zrok_0.4.23_windows_amd64.zip" -OutFile "zrok.zip"
+        Expand-Archive zrok.zip -DestinationPath .
+        
+        # نقل الملف لمكان سهل
+        Move-Item -Path ".\zrok_0.4.23_windows_amd64\zrok.exe" -Destination "$env:USERPROFILE\zrok.exe"
+        
+        # تفعيل الحساب
+        & "$env:USERPROFILE\zrok.exe" enable $env:ZROK_TOKEN
+        Write-Host "Zrok Enabled Successfully!"
+
+    - name: Start Zrok Tunnel & Show Link
       shell: pwsh
       run: |
-        Write-Host "Starting Pinggy Tunnel..."
+        Write-Host "Starting Zrok Tunnel..."
         
-        # الإصلاح: استخدام ملفين مختلفين للمخرجات والأخطاء لتجنب تضارب الملفات
-        $sshArgs = "-o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io"
-        $proc = Start-Process -FilePath "ssh" -ArgumentList $sshArgs -RedirectStandardOutput "pinggy_out.txt" -RedirectStandardError "pinggy_err.txt" -PassThru -WindowStyle Hidden
-
-        # انتظار 10 ثواني
+        # تشغيل النفق في الخلفية وتسجيل الرابط في ملف
+        $proc = Start-Process -FilePath "$env:USERPROFILE\zrok.exe" -ArgumentList "share public 127.0.0.1:3389 --backend-mode tcpTunnel --headless" -PassThru -RedirectStandardOutput "$env:USERPROFILE\zrok_log.txt"
+        
+        # الانتظار قليلاً حتى يتم إنشاء الرابط
         Start-Sleep -Seconds 10
         
-        $urlFound = $false
-        $retryCount = 0
+        # قراءة الملف واستخراج الرابط
+        $logContent = Get-Content "$env:USERPROFILE\zrok_log.txt"
+        $urlLine = $logContent | Select-String "tcp://"
         
-        # حلقة البحث
-        while ($retryCount -lt 30) {
-            # دمج محتوى الملفين للبحث فيهما
-            $logs = ""
-            if (Test-Path "pinggy_out.txt") { $logs += Get-Content "pinggy_out.txt" -Raw -ErrorAction SilentlyContinue }
-            if (Test-Path "pinggy_err.txt") { $logs += Get-Content "pinggy_err.txt" -Raw -ErrorAction SilentlyContinue }
-
-            # البحث عن نمط الرابط tcp://url:port
-            if ($logs -match "tcp://([a-zA-Z0-9\.-]+):([0-9]+)") {
-                $hostUrl = $matches[1]
-                $portNum = $matches[2]
-                
-                Write-Host "=============================================" -ForegroundColor Green
-                Write-Host "       SUCCESS! Tunnel is Active             " -ForegroundColor Green
-                Write-Host "=============================================" -ForegroundColor Green
-                
-                # طباعة البيانات منفصلة وواضحة
-                Write-Host " HOST (COMPUTER):  $hostUrl " -ForegroundColor Cyan
-                Write-Host " PORT:             $portNum " -ForegroundColor Magenta
-                Write-Host " "
-                Write-Host " USERNAME:         runneradmin " -ForegroundColor Yellow
-                Write-Host " PASSWORD:         Admin@12345 " -ForegroundColor Yellow
-                Write-Host "=============================================" -ForegroundColor Green
-                
-                $urlFound = $true
-                break
-            }
-            
-            Start-Sleep -Seconds 2
-            $retryCount++
+        Write-Host "=============================================" -ForegroundColor Green
+        if ($urlLine) {
+            Write-Host "YOUR RDP ADDRESS IS:" -ForegroundColor Cyan
+            # تنظيف الرابط ليظهر بشكل نظيف
+            $cleanUrl = $urlLine.ToString().Split(" ")[-1]
+            Write-Host $cleanUrl -ForegroundColor Yellow
+        } else {
+            Write-Host "Could not fetch URL instantly. Please check the logs below or wait." -ForegroundColor Red
+            Write-Host "Raw Log Output:"
+            Get-Content "$env:USERPROFILE\zrok_log.txt"
         }
+        Write-Host "User: runneradmin"
+        Write-Host "Pass: Admin@12345"
+        Write-Host "============================================="
 
-        if (-not $urlFound) {
-            Write-Error "Could not find URL. Logs content:"
-            if (Test-Path "pinggy_out.txt") { Get-Content "pinggy_out.txt" }
-            if (Test-Path "pinggy_err.txt") { Get-Content "pinggy_err.txt" }
-            exit 1
-        }
-
-    # 3. إبقاء الجلسة حية
-    - name: Keep Session Alive
+    - name: Keep Alive
       shell: pwsh
       run: |
-        Write-Host "Session is active. Press Cancel to stop."
         while ($true) {
-          Start-Sleep -Seconds 60
-          Write-Host -NoNewline "."
+          Start-Sleep -Seconds 300
         }
