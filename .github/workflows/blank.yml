@@ -1,4 +1,4 @@
-name: Win-RDP-Zrok-Auto
+name: Win-RDP-Zrok-Smart
 
 on: 
   workflow_dispatch:
@@ -14,40 +14,43 @@ jobs:
     - name: Setup User & RDP Configuration
       shell: pwsh
       run: |
-        # 1. إعداد المستخدم
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
-
-        # 2. تفعيل RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
-        
-        # 3. منع قفل الشاشة
         Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name "InactivityTimeoutSecs" -Value 0 -Force
 
-    - name: Install & Configure Zrok (Auto-Latest)
+    - name: Install & Configure Zrok (Smart Download)
       shell: pwsh
       env:
         ZROK_TOKEN: ${{ secrets.ZROK_TOKEN }}
       run: |
-        Write-Host "Finding latest Zrok version..."
+        Write-Host "Fetching latest release info..."
         
-        # جلب معلومات أحدث إصدار تلقائياً من GitHub API
+        # 1. جلب بيانات أحدث إصدار من GitHub API
         $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/openziti/zrok/releases/latest"
-        $tag = $latest.tag_name           # مثال: v0.4.45
-        $ver = $tag.TrimStart('v')        # مثال: 0.4.45
         
-        # تكوين رابط التحميل بناءً على أحدث إصدار
-        $url = "https://github.com/openziti/zrok/releases/download/$tag/zrok_${ver}_windows_amd64.zip"
+        # 2. البحث داخل قائمة الملفات (Assets) عن الملف الخاص بالويندوز
+        # نبحث عن أي ملف ينتهي بـ windows_amd64.zip
+        $asset = $latest.assets | Where-Object { $_.name -like "*windows_amd64.zip" } | Select-Object -First 1
         
-        Write-Host "Downloading version $tag from $url"
-        Invoke-WebRequest $url -OutFile "zrok.zip"
+        if ($null -eq $asset) {
+            Write-Error "Could not find a Windows asset in the latest release!"
+            exit 1
+        }
+
+        $downloadUrl = $asset.browser_download_url
+        Write-Host "Found Asset: $($asset.name)"
+        Write-Host "Downloading from: $downloadUrl"
         
-        # فك الضغط
+        # 3. التحميل باستخدام الرابط المباشر المستخرج
+        Invoke-WebRequest $downloadUrl -OutFile "zrok.zip"
+        
+        # 4. فك الضغط والتثبيت
         Expand-Archive zrok.zip -DestinationPath .
         
-        # البحث عن ملف zrok.exe ونقله (لأن اسم المجلد يتغير مع كل إصدار)
+        # البحث عن ملف zrok.exe ونقله
         $zrokPath = Get-ChildItem -Path . -Recurse -Filter "zrok.exe" | Select-Object -First 1
         Move-Item -Path $zrokPath.FullName -Destination "$env:USERPROFILE\zrok.exe"
         
@@ -59,13 +62,10 @@ jobs:
       shell: pwsh
       run: |
         Write-Host "Starting Zrok Tunnel..."
-        
-        # تشغيل النفق
         $proc = Start-Process -FilePath "$env:USERPROFILE\zrok.exe" -ArgumentList "share public 127.0.0.1:3389 --backend-mode tcpTunnel --headless" -PassThru -RedirectStandardOutput "$env:USERPROFILE\zrok_log.txt"
         
         Start-Sleep -Seconds 15
         
-        # استخراج الرابط
         $logContent = Get-Content "$env:USERPROFILE\zrok_log.txt"
         $urlLine = $logContent | Select-String "tcp://"
         
@@ -75,7 +75,7 @@ jobs:
             $cleanUrl = $urlLine.ToString().Split(" ")[-1]
             Write-Host $cleanUrl -ForegroundColor Yellow
         } else {
-            Write-Host "Error finding URL. Log output:" -ForegroundColor Red
+            Write-Host "Wait a bit more or check logs..." -ForegroundColor Red
             Get-Content "$env:USERPROFILE\zrok_log.txt"
         }
         Write-Host "User: runneradmin"
