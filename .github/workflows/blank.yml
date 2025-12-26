@@ -1,4 +1,4 @@
-name: Win-Final-RealLink
+name: Win-Final-Hybrid
 
 on:
   workflow_dispatch:
@@ -21,61 +21,77 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare + استخراج الرابط الحقيقي (تجاهل localhost)
-    - name: Start Tunnel & Extract Info
+    # 2. تشغيل الأنفاق (محاولة Cloudflare، وإذا فشل يعمل Pinggy تلقائياً)
+    - name: Start Tunnel (Auto Switch)
       shell: pwsh
       run: |
-        Write-Host "Downloading Cloudflare..."
+        $success = $false
+
+        # --- محاولة 1: Cloudflare ---
+        Write-Host "Attempting Method 1: Cloudflare..." -ForegroundColor Cyan
         Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        Write-Host "Starting Tunnel..."
+        # استخدام Start-Process مع توجيه الأخطاء لملف
+        $cfProc = Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "cf_logs.txt" -PassThru -WindowStyle Hidden
         
-        # استخدام CMD للكتابة في السجل
-        $argument = "/c .\cloudflared.exe tunnel --url tcp://localhost:3389 2> tunnel.log"
-        Start-Process -FilePath "cmd.exe" -ArgumentList $argument -WindowStyle Hidden
+        # انتظار 15 ثانية
+        Start-Sleep -Seconds 15
 
-        Start-Sleep -Seconds 10
-        
-        $urlFound = $false
-        $retryCount = 0
-        
-        while ($retryCount -lt 60) {
-            if (Test-Path "tunnel.log") {
-                $stream = [System.IO.File]::Open("tunnel.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                $reader = New-Object System.IO.StreamReader($stream)
-                $logContent = $reader.ReadToEnd()
-                $reader.Close()
-                $stream.Close()
+        if (Test-Path "cf_logs.txt") {
+            # قراءة الملف بطريقة آمنة
+            $logs = Get-Content "cf_logs.txt" -ErrorAction SilentlyContinue
+            $logString = $logs | Out-String
 
-                # التعديل هنا: البحث تحديداً عن .trycloudflare.com لتجنب localhost
-                if ($logContent -match "tcp://([-a-zA-Z0-9]+\.trycloudflare\.com):([0-9]+)") {
-                    $hostUrl = $matches[1]
-                    $portNum = $matches[2]
-
-                    Write-Host "=============================================" -ForegroundColor Green
-                    Write-Host "       SUCCESS! Tunnel is Active             " -ForegroundColor Green
-                    Write-Host "=============================================" -ForegroundColor Green
-                    
-                    Write-Host " HOST (COMPUTER):  $hostUrl " -ForegroundColor Cyan
-                    Write-Host " PORT:             $portNum " -ForegroundColor Magenta
-                    Write-Host " "
-                    Write-Host " USERNAME:         runneradmin " -ForegroundColor Yellow
-                    Write-Host " PASSWORD:         Admin@12345 " -ForegroundColor Yellow
-                    Write-Host "=============================================" -ForegroundColor Green
-                    
-                    $urlFound = $true
-                    break
-                }
+            # البحث عن الرابط في السجلات
+            if ($logString -match "tcp://([-a-zA-Z0-9]+\.trycloudflare\.com):([0-9]+)") {
+                $hostUrl = $matches[1]
+                $portNum = $matches[2]
+                
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host " [CLOUDFLARE] SUCCESS! Tunnel is Active      " -ForegroundColor Green
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host " HOST:         $hostUrl " -ForegroundColor Cyan
+                Write-Host " PORT:         $portNum " -ForegroundColor Magenta
+                Write-Host " USER/PASS:    runneradmin / Admin@12345 " -ForegroundColor Yellow
+                Write-Host "=============================================" -ForegroundColor Green
+                $success = $true
             }
-            
-            Write-Host -NoNewline "."
-            Start-Sleep -Seconds 2
-            $retryCount++
         }
 
-        if (-not $urlFound) {
-            Write-Error "Failed to find Cloudflare URL. Logs:"
-            if (Test-Path "tunnel.log") { Get-Content "tunnel.log" }
+        # --- محاولة 2: Pinggy (البديل التلقائي) ---
+        if (-not $success) {
+            Write-Host "Cloudflare failed or log was empty. Switching to Method 2: Pinggy..." -ForegroundColor Red
+            
+            # إيقاف Cloudflare القديم إذا كان يعمل
+            if ($cfProc -and -not $cfProc.HasExited) { Stop-Process -Id $cfProc.Id -Force }
+
+            # تشغيل Pinggy
+            $pinggyProc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io" -RedirectStandardOutput "pinggy_out.txt" -RedirectStandardError "pinggy_err.txt" -PassThru -WindowStyle Hidden
+            
+            Start-Sleep -Seconds 10
+            
+            # قراءة سجلات Pinggy
+            $pLogs = ""
+            if (Test-Path "pinggy_out.txt") { $pLogs += Get-Content "pinggy_out.txt" -Raw }
+            if (Test-Path "pinggy_err.txt") { $pLogs += Get-Content "pinggy_err.txt" -Raw }
+            
+            if ($pLogs -match "tcp://([a-zA-Z0-9\.-]+):([0-9]+)") {
+                $hostUrl = $matches[1]
+                $portNum = $matches[2]
+                
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host " [PINGGY] SUCCESS! Tunnel is Active          " -ForegroundColor Green
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host " HOST:         $hostUrl " -ForegroundColor Cyan
+                Write-Host " PORT:         $portNum " -ForegroundColor Magenta
+                Write-Host " USER/PASS:    runneradmin / Admin@12345 " -ForegroundColor Yellow
+                Write-Host "=============================================" -ForegroundColor Green
+                $success = $true
+            }
+        }
+
+        if (-not $success) {
+            Write-Error "All methods failed. Please check the workflow logs."
             exit 1
         }
 
@@ -83,7 +99,7 @@ jobs:
     - name: Keep Session Alive
       shell: pwsh
       run: |
-        Write-Host "Session is active. Press Cancel to stop."
+        Write-Host "Session is active. Do not close this tab."
         while ($true) {
           Start-Sleep -Seconds 60
           Write-Host -NoNewline "."
