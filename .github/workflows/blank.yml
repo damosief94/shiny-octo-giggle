@@ -1,4 +1,4 @@
-name: Win-Final-Fix
+name: Win-CF-API-Method
 
 on:
   workflow_dispatch:
@@ -21,8 +21,8 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare (الحل الجذري لمشكلة السجلات)
-    - name: Start Tunnel & Get URL
+    # 2. تشغيل Cloudflare + جلب الرابط عن طريق API (الطريقة المضمونة)
+    - name: Start Tunnel & Get URL via API
       shell: pwsh
       run: |
         Write-Host "Downloading Cloudflare..."
@@ -30,30 +30,25 @@ jobs:
         
         Write-Host "Starting Cloudflare Tunnel..."
         
-        # الحل النهائي: استخدام --logfile لإجبار البرنامج على الكتابة بنفسه
-        # هذا يمنع PowerShell من التدخل ويضمن عدم ضياع البيانات
-        $args = "tunnel --url tcp://localhost:3389 --logfile cloudflared.log"
+        # نشغل البرنامج ونطلب منه فتح منفذ خاص للمقاييس (Metrics) على 45678
+        # هذا يسمح لنا بسحب الرابط مباشرة من النظام دون الحاجة لملفات
+        $args = "tunnel --url tcp://localhost:3389 --metrics localhost:45678"
         Start-Process -FilePath ".\cloudflared.exe" -ArgumentList $args -WindowStyle Hidden
 
-        # انتظار لضمان بدء البرنامج
+        # انتظار قليل
         Start-Sleep -Seconds 10
         
         $urlFound = $false
         $retryCount = 0
         
-        # محاولة البحث عن الرابط لمدة دقيقة ونصف
-        while ($retryCount -lt 90) {
-            if (Test-Path "cloudflared.log") {
-                # قراءة الملف بطريقة آمنة لتجنب مشاكل القفل (File Locking)
-                $stream = [System.IO.File]::Open("cloudflared.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                $reader = New-Object System.IO.StreamReader($stream)
-                $logContent = $reader.ReadToEnd()
-                $reader.Close()
-                $stream.Close()
-
-                if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
-                    $rawUrl = $matches[0]
-                    $cleanUrl = $rawUrl -replace "tcp://", ""
+        # محاولة سحب الرابط من الـ API الداخلي
+        while ($retryCount -lt 60) {
+            try {
+                # طلب المعلومات من Cloudflare مباشرة
+                $response = Invoke-RestMethod -Uri "http://localhost:45678/quicktunnel" -ErrorAction Stop
+                
+                if ($response -and $response.hostname) {
+                    $cleanUrl = $response.hostname
                     
                     Write-Host "=============================================" -ForegroundColor Green
                     Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
@@ -64,14 +59,17 @@ jobs:
                     break
                 }
             }
+            catch {
+                # نتجاهل الأخطاء حتى يعمل السيرفر
+            }
+            
             Write-Host -NoNewline "."
-            Start-Sleep -Seconds 1
+            Start-Sleep -Seconds 2
             $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Could not find URL. Dumping log content for debugging:"
-            if (Test-Path "cloudflared.log") { Get-Content "cloudflared.log" }
+            Write-Error "Failed to get URL via API. Check if cloudflared is running."
             exit 1
         }
 
