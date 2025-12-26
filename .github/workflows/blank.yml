@@ -1,4 +1,4 @@
-name: Win-CF-Job
+name: Win-CF-Final
 
 on:
   workflow_dispatch:
@@ -21,70 +21,59 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare باستخدام Start-Job (الحل الجذري)
-    - name: Start Cloudflare Tunnel
+    # 2. خطوة واحدة شاملة: تشغيل + جلب الرابط + إبقاء الجلسة
+    - name: Run Cloudflare & Keep Alive
       shell: pwsh
       run: |
-        # تحميل الأداة
+        Write-Host "Downloading Cloudflare..."
         Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        # إنشاء وظيفة في الخلفية لتشغيل النفق
-        # نستخدم --no-autoupdate لمنع تأخير التحديث
-        $ScriptBlock = {
-            param($exePath)
-            & $exePath tunnel --url tcp://localhost:3389 --no-autoupdate
-        }
-        
-        # بدء الوظيفة
-        Start-Job -ScriptBlock $ScriptBlock -ArgumentList (Convert-Path .\cloudflared.exe) -Name "CloudflareTunnel"
-        
-        Write-Host "Tunnel job started. Scanning output for URL..."
+        Write-Host "Starting Tunnel..."
+        # نستخدم Start-Process ونوجه المخرجات لملف، ونبقي العملية تعمل
+        # نستخدم cmd /c لضمان التقاط كل المخرجات (Standard Output + Error)
+        $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c .\cloudflared.exe tunnel --url tcp://localhost:3389 > cloudflared.log 2>&1" -WindowStyle Hidden -PassThru
 
-    # 3. استخراج الرابط من الوظيفة مباشرة
-    - name: Get Connection Info
-      shell: pwsh
-      run: |
-        $job = Get-Job -Name "CloudflareTunnel"
-        $maxRetries = 100
-        $retryCount = 0
         $urlFound = $false
+        $retryCount = 0
+        
+        # حلقة بحث عن الرابط (لمدة دقيقة كحد أقصى)
+        while ($retryCount -lt 60) {
+            if (Test-Path "cloudflared.log") {
+                # استخدام [IO.File] للقراءة حتى لو الملف مفتوح من برنامج آخر (لحل مشكلة Locking)
+                $stream = [System.IO.File]::Open("cloudflared.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                $reader = New-Object System.IO.StreamReader($stream)
+                $logContent = $reader.ReadToEnd()
+                $reader.Close()
+                $stream.Close()
 
-        while ($retryCount -lt $maxRetries) {
-            # استقبال البيانات الجديدة من الوظيفة دون حذفها
-            $output = Receive-Job -Job $job -Keep
-            
-            # تحويل المخرجات إلى نص واحد للبحث
-            $logContent = $output -join "`n"
-            
-            # البحث عن الرابط
-            if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
-                $rawUrl = $matches[0]
-                $cleanUrl = $rawUrl -replace "tcp://", ""
-                
-                Write-Host "=============================================" -ForegroundColor Green
-                Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
-                Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
-                Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
-                Write-Host "=============================================" -ForegroundColor Green
-                $urlFound = $true
-                break
+                if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
+                    $rawUrl = $matches[0]
+                    $cleanUrl = $rawUrl -replace "tcp://", ""
+                    
+                    Write-Host "=============================================" -ForegroundColor Green
+                    Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
+                    Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
+                    Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
+                    Write-Host "=============================================" -ForegroundColor Green
+                    $urlFound = $true
+                    break
+                }
             }
-            
-            Write-Host "Waiting for Cloudflare URL... ($retryCount)"
-            Start-Sleep -Seconds 3
+            Write-Host -NoNewline "."
+            Start-Sleep -Seconds 2
             $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Could not find URL. Showing all output:"
-            Receive-Job -Job $job -Keep
+            Write-Error "Failed to get URL. Log content:"
+            Get-Content "cloudflared.log"
+            exit 1
         }
 
-    # 4. إبقاء الجلسة حية
-    - name: Keep Session Alive
-      shell: pwsh
-      run: |
-        Write-Host "Session is active. Press Cancel Workflow to stop."
+        # حلقة لانهائية لإبقاء الجلسة مفتوحة داخل نفس الخطوة
+        Write-Host "Session is running. Do not close this step."
         while ($true) {
-          Start-Sleep -Seconds 300
+            Start-Sleep -Seconds 60
+            # طباعة نقطة كل دقيقة لمنع توقف الجلسة بسبب الخمول
+            Write-Host -NoNewline "."
         }
