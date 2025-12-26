@@ -1,4 +1,4 @@
-name: Win-Final-CF
+name: Win-Final-Fix
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # 1. إعداد وتفعيل RDP (نفس إعداداتك الناجحة السابقة)
+    # 1. إعداد وتفعيل RDP
     - name: Enable Remote Desktop
       shell: pwsh
       run: |
@@ -21,36 +21,31 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare (الكود المصحح بدون أخطاء التوجيه)
-    - name: Start Cloudflare Tunnel
+    # 2. تشغيل Cloudflare (الحل الجذري لمشكلة السجلات)
+    - name: Start Tunnel & Get URL
       shell: pwsh
       run: |
         Write-Host "Downloading Cloudflare..."
         Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        Write-Host "Starting Tunnel..."
-        # هنا الحل: نوجه الأخطاء فقط لملف السجل لأن الرابط يظهر هناك
-        # ونترك المخرجات العادية تذهب للفراغ لتجنب تضارب الملفات
-        $process = Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "tunnel.log" -PassThru -WindowStyle Hidden
+        Write-Host "Starting Cloudflare Tunnel..."
+        
+        # الحل النهائي: استخدام --logfile لإجبار البرنامج على الكتابة بنفسه
+        # هذا يمنع PowerShell من التدخل ويضمن عدم ضياع البيانات
+        $args = "tunnel --url tcp://localhost:3389 --logfile cloudflared.log"
+        Start-Process -FilePath ".\cloudflared.exe" -ArgumentList $args -WindowStyle Hidden
 
-        # انتظار 10 ثواني لضمان إنشاء الرابط
+        # انتظار لضمان بدء البرنامج
         Start-Sleep -Seconds 10
         
-        # التأكد أن البرنامج لم يتوقف
-        if ($process.HasExited) {
-            Write-Error "Cloudflare stopped unexpectedly!"
-            if (Test-Path "tunnel.log") { Get-Content "tunnel.log" }
-            exit 1
-        }
-
-        # قراءة الملف واستخراج الرابط
         $urlFound = $false
         $retryCount = 0
         
-        while ($retryCount -lt 20) {
-            if (Test-Path "tunnel.log") {
-                # قراءة الملف بطريقة آمنة (Shared Read) لتجنب مشكلة الملف المقفول
-                $stream = [System.IO.File]::Open("tunnel.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        # محاولة البحث عن الرابط لمدة دقيقة ونصف
+        while ($retryCount -lt 90) {
+            if (Test-Path "cloudflared.log") {
+                # قراءة الملف بطريقة آمنة لتجنب مشاكل القفل (File Locking)
+                $stream = [System.IO.File]::Open("cloudflared.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
                 $reader = New-Object System.IO.StreamReader($stream)
                 $logContent = $reader.ReadToEnd()
                 $reader.Close()
@@ -69,21 +64,20 @@ jobs:
                     break
                 }
             }
-            Start-Sleep -Seconds 2
+            Write-Host -NoNewline "."
+            Start-Sleep -Seconds 1
             $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Could not find URL. Logs:"
-            Get-Content "tunnel.log"
+            Write-Error "Could not find URL. Dumping log content for debugging:"
+            if (Test-Path "cloudflared.log") { Get-Content "cloudflared.log" }
             exit 1
         }
 
-    # 3. إبقاء الجلسة حية
-    - name: Keep Session Alive
-      shell: pwsh
-      run: |
-        Write-Host "Session is running..."
+        # حلقة إبقاء الجلسة حية
+        Write-Host "Session is ready! Do not cancel this workflow."
         while ($true) {
-          Start-Sleep -Seconds 300
+            Start-Sleep -Seconds 60
+            Write-Host -NoNewline "."
         }
