@@ -1,4 +1,4 @@
-name: Win-Final-CMD
+name: Win-Final-RealLink
 
 on:
   workflow_dispatch:
@@ -21,38 +21,34 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تشغيل Cloudflare (باستخدام CMD لضمان كتابة السجل)
+    # 2. تشغيل Cloudflare + استخراج الرابط الحقيقي (تجاهل localhost)
     - name: Start Tunnel & Extract Info
       shell: pwsh
       run: |
         Write-Host "Downloading Cloudflare..."
         Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        Write-Host "Starting Tunnel using CMD redirection..."
+        Write-Host "Starting Tunnel..."
         
-        # الحيلة هنا: استخدام cmd.exe لتشغيل البرنامج وتوجيه الأخطاء (2>) للملف
-        # هذا يضمن أن الملف يكتب فوراً ولا يكون فارغاً
+        # استخدام CMD للكتابة في السجل
         $argument = "/c .\cloudflared.exe tunnel --url tcp://localhost:3389 2> tunnel.log"
         Start-Process -FilePath "cmd.exe" -ArgumentList $argument -WindowStyle Hidden
 
-        # انتظار 10 ثواني
         Start-Sleep -Seconds 10
         
         $urlFound = $false
         $retryCount = 0
         
-        # حلقة البحث (لمدة دقيقة)
         while ($retryCount -lt 60) {
             if (Test-Path "tunnel.log") {
-                # قراءة الملف بطريقة تسمح بالمشاركة (تجاوز قفل الملفات)
                 $stream = [System.IO.File]::Open("tunnel.log", [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
                 $reader = New-Object System.IO.StreamReader($stream)
                 $logContent = $reader.ReadToEnd()
                 $reader.Close()
                 $stream.Close()
 
-                # البحث عن النمط tcp://url:port
-                if ($logContent -match "tcp://([-a-zA-Z0-9\.]+):([0-9]+)") {
+                # التعديل هنا: البحث تحديداً عن .trycloudflare.com لتجنب localhost
+                if ($logContent -match "tcp://([-a-zA-Z0-9]+\.trycloudflare\.com):([0-9]+)") {
                     $hostUrl = $matches[1]
                     $portNum = $matches[2]
 
@@ -60,7 +56,6 @@ jobs:
                     Write-Host "       SUCCESS! Tunnel is Active             " -ForegroundColor Green
                     Write-Host "=============================================" -ForegroundColor Green
                     
-                    # طباعة النتائج بشكل منفصل وواضح
                     Write-Host " HOST (COMPUTER):  $hostUrl " -ForegroundColor Cyan
                     Write-Host " PORT:             $portNum " -ForegroundColor Magenta
                     Write-Host " "
@@ -79,7 +74,7 @@ jobs:
         }
 
         if (-not $urlFound) {
-            Write-Error "Failed to extract port. Dumping log file content:"
+            Write-Error "Failed to find Cloudflare URL. Logs:"
             if (Test-Path "tunnel.log") { Get-Content "tunnel.log" }
             exit 1
         }
