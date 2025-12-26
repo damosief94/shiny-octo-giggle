@@ -1,4 +1,4 @@
-name: Win-RDP-Pinggy-Final
+name: Win-RDP-Serveo-Force
 
 on: 
   workflow_dispatch:
@@ -14,45 +14,49 @@ jobs:
     - name: Setup User & RDP
       shell: pwsh
       run: |
-        # 1. إعداد المستخدم وكلمة المرور
+        # 1. إعداد المستخدم
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-        # 2. تفعيل RDP والجدار الناري
+        # 2. تفعيل RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
         Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name "InactivityTimeoutSecs" -Value 0 -Force
 
-    - name: Start Pinggy Tunnel
+    - name: Start Serveo Tunnel (Force TTY)
       shell: pwsh
       run: |
-        Write-Host "Connecting to Pinggy..."
+        Write-Host "Connecting to Serveo..."
         
-        # تشغيل SSH Tunnel في الخلفية وحفظ المخرجات في ملف
-        # نستخدم tcp@a.pinggy.io للحصول على رابط TCP مباشر
-        $proc = Start-Process -FilePath "ssh" -ArgumentList "-o StrictHostKeyChecking=no -p 443 -R0:localhost:3389 tcp@a.pinggy.io" -PassThru -RedirectStandardOutput "pinggy_log.txt" -RedirectStandardError "pinggy_error.txt" -WindowStyle Hidden
+        # نستخدم cmd /c لتوجيه المخرجات بشكل أقوى
+        # -tt تجبر السيرفر على طباعة الرابط
+        # -o StrictHostKeyChecking=no تمنع توقف السكريبت للسؤال عن البصمة
+        $sshCmd = "ssh -tt -o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net"
         
-        # الانتظار 10 ثواني لضمان إنشاء الرابط
+        # تشغيل العملية في الخلفية وتوجيه كل المخرجات (Standard & Error) لملف واحد
+        $proc = Start-Process cmd -ArgumentList "/c $sshCmd > serveo_log.txt 2>&1" -PassThru -WindowStyle Hidden
+        
+        # الانتظار 10 ثواني
         Start-Sleep -Seconds 10
         
-        # قراءة الملف واستخراج الرابط
-        $logContent = Get-Content "pinggy_log.txt" -ErrorAction SilentlyContinue
+        # قراءة الملف
+        $logContent = Get-Content "serveo_log.txt" -ErrorAction SilentlyContinue
         
         Write-Host "==========================================" -ForegroundColor Green
         
-        # البحث عن الرابط داخل السطور
-        $urlLine = $logContent | Select-String "tcp://"
+        # البحث عن النمط الذي تطبعه Serveo عادة
+        # مثال: Forwarding TCP from serveo.net:12345
+        $urlMatch = $logContent | Select-String "serveo.net:[0-9]+"
         
-        if ($urlLine) {
+        if ($urlMatch) {
             Write-Host "YOUR RDP ADDRESS IS:" -ForegroundColor Cyan
-            # تنظيف الرابط ليظهر بشكل نظيف
-            $cleanUrl = $urlLine.ToString() -replace ".*(tcp://.*)", '$1'
+            # تنظيف النص لاستخراج الرابط فقط
+            $cleanUrl = $urlMatch.Matches.Value
             Write-Host $cleanUrl -ForegroundColor Yellow
         } else {
-            Write-Host "URL not found immediately. Checking raw output:" -ForegroundColor Red
-            Get-Content "pinggy_log.txt"
-            Get-Content "pinggy_error.txt"
+            Write-Host "Could not grep URL perfectly, showing full log:" -ForegroundColor Red
+            Get-Content "serveo_log.txt"
         }
         
         Write-Host "User: runneradmin"
