@@ -1,4 +1,4 @@
-name: Win-Cloudflare-Fixed
+name: Win-CF-Job
 
 on:
   workflow_dispatch:
@@ -21,66 +21,63 @@ jobs:
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
 
-    # 2. تحميل وتشغيل Cloudflare Tunnel (طريقة cmd القوية)
+    # 2. تشغيل Cloudflare باستخدام Start-Job (الحل الجذري)
     - name: Start Cloudflare Tunnel
       shell: pwsh
       run: |
         # تحميل الأداة
         Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
         
-        # التأكد من أن الملف تم تحميله
-        if ((Get-Item cloudflared.exe).Length -lt 1000) {
-            Write-Error "File download failed or file is corrupted."
-            exit 1
+        # إنشاء وظيفة في الخلفية لتشغيل النفق
+        # نستخدم --no-autoupdate لمنع تأخير التحديث
+        $ScriptBlock = {
+            param($exePath)
+            & $exePath tunnel --url tcp://localhost:3389 --no-autoupdate
         }
-
-        # تشغيل النفق باستخدام CMD لضمان حفظ السجلات
-        # هذا الأمر يوجه كل المخرجات (الأخطاء والنجاح) إلى ملف واحد
-        Start-Process -FilePath "cmd.exe" -ArgumentList "/c .\cloudflared.exe tunnel --url tcp://localhost:3389 > cloudflared.log 2>&1" -WindowStyle Hidden
         
-        Write-Host "Cloudflare Tunnel started via CMD... waiting for URL..."
-        Start-Sleep -Seconds 10
+        # بدء الوظيفة
+        Start-Job -ScriptBlock $ScriptBlock -ArgumentList (Convert-Path .\cloudflared.exe) -Name "CloudflareTunnel"
+        
+        Write-Host "Tunnel job started. Scanning output for URL..."
 
-    # 3. جلب وطباعة رابط الاتصال
+    # 3. استخراج الرابط من الوظيفة مباشرة
     - name: Get Connection Info
       shell: pwsh
       run: |
-        $maxRetries = 200
+        $job = Get-Job -Name "CloudflareTunnel"
+        $maxRetries = 100
         $retryCount = 0
         $urlFound = $false
 
         while ($retryCount -lt $maxRetries) {
-            if (Test-Path "cloudflared.log") {
-                $logContent = Get-Content "cloudflared.log" -Raw
+            # استقبال البيانات الجديدة من الوظيفة دون حذفها
+            $output = Receive-Job -Job $job -Keep
+            
+            # تحويل المخرجات إلى نص واحد للبحث
+            $logContent = $output -join "`n"
+            
+            # البحث عن الرابط
+            if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
+                $rawUrl = $matches[0]
+                $cleanUrl = $rawUrl -replace "tcp://", ""
                 
-                # البحث عن الرابط
-                if ($logContent -match "tcp://[-a-zA-Z0-9.]+\.trycloudflare\.com:[0-9]+") {
-                    $rawUrl = $matches[0]
-                    $cleanUrl = $rawUrl -replace "tcp://", ""
-                    
-                    Write-Host "=============================================" -ForegroundColor Green
-                    Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
-                    Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
-                    Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
-                    Write-Host "=============================================" -ForegroundColor Green
-                    $urlFound = $true
-                    break
-                }
+                Write-Host "=============================================" -ForegroundColor Green
+                Write-Host " CONNECT TO:   $cleanUrl " -ForegroundColor Yellow
+                Write-Host " USERNAME:     runneradmin " -ForegroundColor Yellow
+                Write-Host " PASSWORD:     Admin@12345 " -ForegroundColor Yellow
+                Write-Host "=============================================" -ForegroundColor Green
+                $urlFound = $true
+                break
             }
             
-            # طباعة نقطة كل ثانية للدلالة على الانتظار
-            Write-Host -NoNewline "."
-            Start-Sleep -Seconds 2
+            Write-Host "Waiting for Cloudflare URL... ($retryCount)"
+            Start-Sleep -Seconds 3
             $retryCount++
         }
 
         if (-not $urlFound) {
-            Write-Error "Failed to find Cloudflare URL. Dumping log content:"
-            if (Test-Path "cloudflared.log") { 
-                Get-Content "cloudflared.log" 
-            } else {
-                Write-Error "Log file does not exist! The process failed to start."
-            }
+            Write-Error "Could not find URL. Showing all output:"
+            Receive-Job -Job $job -Keep
         }
 
     # 4. إبقاء الجلسة حية
