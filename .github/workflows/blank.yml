@@ -1,4 +1,4 @@
-name: Win-RDP-Zrok-Smart
+name: Win-RDP-Zrok-Final
 
 on: 
   workflow_dispatch:
@@ -14,47 +14,44 @@ jobs:
     - name: Setup User & RDP Configuration
       shell: pwsh
       run: |
+        # إعداد المستخدم وكلمة المرور
         $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $password
+
+        # تفعيل RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
+        
+        # منع قفل الشاشة
         Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name "InactivityTimeoutSecs" -Value 0 -Force
 
-    - name: Install & Configure Zrok (Smart Download)
+    - name: Install & Configure Zrok (Fixed)
       shell: pwsh
       env:
         ZROK_TOKEN: ${{ secrets.ZROK_TOKEN }}
       run: |
-        Write-Host "Fetching latest release info..."
+        # 1. التحميل باستخدام الرابط الذي وجدته أنت
+        $url = "https://github.com/openziti/zrok/releases/download/v1.1.10/zrok_1.1.10_windows_amd64.tar.gz"
+        Write-Host "Downloading Zrok from: $url"
+        Invoke-WebRequest $url -OutFile "zrok.tar.gz"
         
-        # 1. جلب بيانات أحدث إصدار من GitHub API
-        $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/openziti/zrok/releases/latest"
+        # 2. فك الضغط (استخدام tar بدلاً من Expand-Archive لأنه ملف tar.gz)
+        Write-Host "Extracting..."
+        tar -xf zrok.tar.gz
         
-        # 2. البحث داخل قائمة الملفات (Assets) عن الملف الخاص بالويندوز
-        # نبحث عن أي ملف ينتهي بـ windows_amd64.zip
-        $asset = $latest.assets | Where-Object { $_.name -like "*windows_amd64.zip" } | Select-Object -First 1
+        # 3. البحث عن ملف zrok.exe ونقله لمكان معروف
+        $zrokPath = Get-ChildItem -Path . -Recurse -Filter "zrok.exe" | Select-Object -First 1
         
-        if ($null -eq $asset) {
-            Write-Error "Could not find a Windows asset in the latest release!"
+        if ($null -eq $zrokPath) {
+            Write-Error "Could not find zrok.exe after extraction!"
             exit 1
         }
 
-        $downloadUrl = $asset.browser_download_url
-        Write-Host "Found Asset: $($asset.name)"
-        Write-Host "Downloading from: $downloadUrl"
-        
-        # 3. التحميل باستخدام الرابط المباشر المستخرج
-        Invoke-WebRequest $downloadUrl -OutFile "zrok.zip"
-        
-        # 4. فك الضغط والتثبيت
-        Expand-Archive zrok.zip -DestinationPath .
-        
-        # البحث عن ملف zrok.exe ونقله
-        $zrokPath = Get-ChildItem -Path . -Recurse -Filter "zrok.exe" | Select-Object -First 1
         Move-Item -Path $zrokPath.FullName -Destination "$env:USERPROFILE\zrok.exe"
+        Write-Host "Zrok installed successfully at $env:USERPROFILE\zrok.exe"
         
-        # تفعيل الحساب
+        # 4. تفعيل الحساب
         & "$env:USERPROFILE\zrok.exe" enable $env:ZROK_TOKEN
         Write-Host "Zrok Enabled Successfully!"
 
@@ -62,10 +59,14 @@ jobs:
       shell: pwsh
       run: |
         Write-Host "Starting Zrok Tunnel..."
+        
+        # تشغيل النفق
         $proc = Start-Process -FilePath "$env:USERPROFILE\zrok.exe" -ArgumentList "share public 127.0.0.1:3389 --backend-mode tcpTunnel --headless" -PassThru -RedirectStandardOutput "$env:USERPROFILE\zrok_log.txt"
         
+        # الانتظار 15 ثانية حتى يتم الاتصال
         Start-Sleep -Seconds 15
         
+        # قراءة الرابط
         $logContent = Get-Content "$env:USERPROFILE\zrok_log.txt"
         $urlLine = $logContent | Select-String "tcp://"
         
@@ -75,7 +76,7 @@ jobs:
             $cleanUrl = $urlLine.ToString().Split(" ")[-1]
             Write-Host $cleanUrl -ForegroundColor Yellow
         } else {
-            Write-Host "Wait a bit more or check logs..." -ForegroundColor Red
+            Write-Host "Could not find URL yet. Printing Logs:" -ForegroundColor Red
             Get-Content "$env:USERPROFILE\zrok_log.txt"
         }
         Write-Host "User: runneradmin"
