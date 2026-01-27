@@ -1,71 +1,46 @@
-name: Win-RDP-Serveo-Force
+name: Ultimate-Win-CRD
 
 on: 
   workflow_dispatch:
 
 jobs:
-  rdp-session:
+  build:
     runs-on: windows-latest
-
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Download Chrome Installer
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/latest/chrome_installer.exe" -OutFile "chrome_installer.exe"
+          Start-Process -FilePath "chrome_installer.exe" -Args "/silent /install" -Wait
 
-    - name: Setup User & RDP
-      shell: pwsh
-      run: |
-        # 1. إعداد المستخدم
-        $password = ConvertTo-SecureString "Admin@12345" -AsPlainText -Force
-        Set-LocalUser -Name "runneradmin" -Password $password
+      - name: Download and Install CRD
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile "crd.msi"
+          Start-Process -FilePath "msiexec.exe" -Args "/i crd.msi /quiet /qn" -Wait
 
-        # 2. تفعيل RDP
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 1
-        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name "InactivityTimeoutSecs" -Value 0 -Force
+      - name: Start Chrome Remote Desktop
+        shell: pwsh
+        env:
+          CRD_CODE: ${{ secrets.CRD_CODE }}
+          CRD_PIN: ${{ secrets.CRD_PIN }}
+        run: |
+          # تحديد مسار البرنامج
+          $exePath = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+          
+          # تشغيل السيرفر مع الكود والرقم السري
+          & $exePath --code="$env:CRD_CODE" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name=$Env:COMPUTERNAME --pin=$env:CRD_PIN
 
-    - name: Start Serveo Tunnel (Force TTY)
-      shell: pwsh
-      run: |
-        Write-Host "Connecting to Serveo..."
-        
-        # نستخدم cmd /c لتوجيه المخرجات بشكل أقوى
-        # -tt تجبر السيرفر على طباعة الرابط
-        # -o StrictHostKeyChecking=no تمنع توقف السكريبت للسؤال عن البصمة
-        $sshCmd = "ssh -tt -o StrictHostKeyChecking=no -R 0:localhost:3389 serveo.net"
-        
-        # تشغيل العملية في الخلفية وتوجيه كل المخرجات (Standard & Error) لملف واحد
-        $proc = Start-Process cmd -ArgumentList "/c $sshCmd > serveo_log.txt 2>&1" -PassThru -WindowStyle Hidden
-        
-        # الانتظار 10 ثواني
-        Start-Sleep -Seconds 10
-        
-        # قراءة الملف
-        $logContent = Get-Content "serveo_log.txt" -ErrorAction SilentlyContinue
-        
-        Write-Host "==========================================" -ForegroundColor Green
-        
-        # البحث عن النمط الذي تطبعه Serveo عادة
-        # مثال: Forwarding TCP from serveo.net:12345
-        $urlMatch = $logContent | Select-String "serveo.net:[0-9]+"
-        
-        if ($urlMatch) {
-            Write-Host "YOUR RDP ADDRESS IS:" -ForegroundColor Cyan
-            # تنظيف النص لاستخراج الرابط فقط
-            $cleanUrl = $urlMatch.Matches.Value
-            Write-Host $cleanUrl -ForegroundColor Yellow
-        } else {
-            Write-Host "Could not grep URL perfectly, showing full log:" -ForegroundColor Red
-            Get-Content "serveo_log.txt"
-        }
-        
-        Write-Host "User: runneradmin"
-        Write-Host "Pass: Admin@12345"
-        Write-Host "=========================================="
+      - name: Success Message
+        shell: pwsh
+        run: |
+          Write-Host "======================================================"
+          Write-Host "✅ The Server is RUNNING!"
+          Write-Host "🔗 Go to: https://remotedesktop.google.com/access"
+          Write-Host "👉 Connect to the PC named 'WIN-...' using your PIN."
+          Write-Host "======================================================"
 
-    - name: Keep Alive
-      shell: pwsh
-      run: |
-        while ($true) {
-          Start-Sleep -Seconds 300
-        }
+      - name: Keep Alive
+        shell: pwsh
+        run: |
+          while ($true) { Start-Sleep -Seconds 300 }
