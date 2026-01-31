@@ -1,11 +1,11 @@
-name: Ultimate-Win-CRD
+name: Ultimate-Win10-CRD
 
 on: 
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2019  # Windows Server 2019 (الأقرب لبيئة Windows 10)
     steps:
       - name: Download Chrome Installer
         shell: pwsh
@@ -19,75 +19,25 @@ jobs:
           Invoke-WebRequest -Uri "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile "crd.msi"
           Start-Process -FilePath "msiexec.exe" -Args "/i crd.msi /quiet /qn" -Wait
 
-      # ========================================================
-      # بداية التعديل: تثبيت الشاشة والكرت (نسخة مصححة 100%)
-      # ========================================================
-      - name: Ultimate GPU Injection (Mesa3D System-Wide)
-        shell: pwsh
-        run: |
-          # 1. تثبيت تعريف الشاشة الوهمية
-          Write-Host ">>> 1. Installing Virtual Display Driver..."
-          # تحميل الملف
-          Invoke-WebRequest -Uri "https://www.amyuni.com/downloads/usbmmidd_v2.zip" -OutFile "usbmmidd.zip"
-          
-          # فك الضغط (Force للكتابة فوق أي ملفات)
-          Expand-Archive "usbmmidd.zip" -DestinationPath "c:\usbmmidd" -Force
-          
-          # البحث الذكي عن الملف التنفيذي (لأن الاسم والمكان قد يتغيران)
-          $exePath = Get-ChildItem -Path "c:\usbmmidd" -Recurse -Filter "deviceinstaller64.exe" | Select-Object -First 1
-          
-          if ($exePath) {
-              Set-Location -Path $exePath.DirectoryName
-              Write-Host "Found installer at: $($exePath.DirectoryName)"
-              & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
-              & .\deviceinstaller64.exe enableidd 1
-              Write-Host "✅ Virtual Display Active."
-          } else {
-              Write-Error "Could not find deviceinstaller64.exe"
-          }
-
-          # 2. تحميل Mesa3D (تم إصلاح الرابط + إضافة UserAgent)
-          Write-Host ">>> 2. Downloading Mesa3D (Fake GPU)..."
-          cd C:\
-          $mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.3/mesa3d-25.3.3-release-mingw.7z"
-          
-          # إضافة UserAgent ضروري جداً لتجنب حظر GitHub للتحميل التلقائي
-          Invoke-WebRequest -Uri $mesaUrl -OutFile "mesa.7z" -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-          
-          7z x mesa.7z -oc:\mesa3d
-          $MesaDll = "C:\mesa3d\x64\opengl32.dll"
-
-          # 3. استبدال ملف النظام (System32 Injection)
-          Write-Host ">>> 3. Injecting Mesa3D into System32..."
-          $SysDll = "C:\Windows\System32\opengl32.dll"
-          
-          # كسر حماية الويندوز عن ملف النظام
-          takeown /f $SysDll
-          icacls $SysDll /grant "${Env:USERNAME}:F"
-          
-          # استبدال الملف الأصلي
-          Rename-Item -Path $SysDll -NewName "opengl32.bak" -Force
-          Copy-Item -Path $MesaDll -Destination $SysDll -Force
-          
-          Write-Host "✅ FAKE GPU INSTALLED IN SYSTEM32 SUCCESSFULLY!"
-      # ========================================================
-
       - name: Start Chrome Remote Desktop
         shell: pwsh
         env:
           CRD_CODE: ${{ secrets.CRD_CODE }}
           CRD_PIN: ${{ secrets.CRD_PIN }}
         run: |
+          # تحديد مسار البرنامج
           $exePath = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+          
+          # تشغيل السيرفر مع الكود والرقم السري
           & $exePath --code="$env:CRD_CODE" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name=$Env:COMPUTERNAME --pin=$env:CRD_PIN
 
       - name: Success Message
         shell: pwsh
         run: |
           Write-Host "======================================================"
-          Write-Host "✅ The Server is RUNNING with FAKE GPU INJECTED!"
+          Write-Host "✅ Windows 10 Environment is READY!"
           Write-Host "🔗 Go to: https://remotedesktop.google.com/access"
-          Write-Host "👉 Connect to the PC named 'WIN-...' using your PIN."
+          Write-Host "👉 Connect to the PC named '$Env:COMPUTERNAME' using your PIN."
           Write-Host "======================================================"
 
       - name: Keep Alive
