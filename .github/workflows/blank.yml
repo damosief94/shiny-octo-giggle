@@ -20,30 +20,46 @@ jobs:
           Start-Process -FilePath "msiexec.exe" -Args "/i crd.msi /quiet /qn" -Wait
 
       # ========================================================
-      # بداية التعديل: تثبيت الكرت الوهمي والشاشة الوهمية
+      # بداية التعديل: البحث التلقائي عن الملف وتشغيله
       # ========================================================
       - name: Ultimate GPU Injection (Mesa3D System-Wide)
         shell: pwsh
         run: |
+          # 1. تثبيت تعريف الشاشة الوهمية (مع كود البحث عن المسار)
           Write-Host ">>> 1. Installing Virtual Display Driver..."
           Invoke-WebRequest -Uri "https://www.amyuni.com/downloads/usbmmidd_v2.zip" -OutFile "usbmmidd.zip"
-          Expand-Archive "usbmmidd.zip" -DestinationPath "c:\usbmmidd"
-          cd c:\usbmmidd
-          & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
-          & .\deviceinstaller64.exe enableidd 1
-          Write-Host "✅ Virtual Display Active."
+          
+          # فك الضغط
+          Expand-Archive "usbmmidd.zip" -DestinationPath "c:\usbmmidd" -Force
+          
+          # البحث عن مكان الملف التنفيذي تلقائياً (لحل مشكلة المسار)
+          $exePath = Get-ChildItem -Path "c:\usbmmidd" -Recurse -Filter "deviceinstaller64.exe" | Select-Object -First 1
+          
+          if ($exePath) {
+              # الدخول إلى المجلد الذي يحتوي على الملف
+              Set-Location -Path $exePath.DirectoryName
+              Write-Host "Found installer at: $($exePath.DirectoryName)"
+              
+              # التشغيل
+              & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
+              & .\deviceinstaller64.exe enableidd 1
+              Write-Host "✅ Virtual Display Active."
+          } else {
+              Write-Error "Could not find deviceinstaller64.exe"
+          }
 
+          # 2. تحميل Mesa3D (الكارت الوهمي)
           Write-Host ">>> 2. Downloading Mesa3D (Fake GPU)..."
           cd C:\
-          # رابط مباشر لنسخة مستقرة من Mesa3D MinGW
           Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-mingw.7z" -OutFile "mesa.7z"
           7z x mesa.7z -oc:\mesa3d
           $MesaDll = "C:\mesa3d\x64\opengl32.dll"
 
+          # 3. استبدال ملف النظام (System32 Injection)
           Write-Host ">>> 3. Injecting Mesa3D into System32..."
           $SysDll = "C:\Windows\System32\opengl32.dll"
           
-          # كسر حماية الويندوز عن ملف النظام (Take Ownership)
+          # كسر حماية الويندوز عن ملف النظام
           takeown /f $SysDll
           icacls $SysDll /grant "${Env:USERNAME}:F"
           
@@ -52,8 +68,6 @@ jobs:
           Copy-Item -Path $MesaDll -Destination $SysDll -Force
           
           Write-Host "✅ FAKE GPU INSTALLED IN SYSTEM32 SUCCESSFULLY!"
-      # ========================================================
-      # نهاية التعديل
       # ========================================================
 
       - name: Start Chrome Remote Desktop
