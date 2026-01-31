@@ -1,11 +1,11 @@
-name: Ultimate-Win-CRD4
+name: Ultimate-Win10-CRD4
 
 on: 
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2019  # Windows Server 2019 (الأقرب لبيئة Windows 10)
     steps:
       - name: Download Chrome Installer
         shell: pwsh
@@ -35,9 +35,9 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "======================================================"
-          Write-Host "✅ The Server is RUNNING!"
+          Write-Host "✅ Windows 10 Environment is READY!"
           Write-Host "🔗 Go to: https://remotedesktop.google.com/access"
-          Write-Host "👉 Connect to the PC named 'WIN-...' using your PIN."
+          Write-Host "👉 Connect to the PC named '$Env:COMPUTERNAME' using your PIN."
           Write-Host "======================================================"
 
       - name: Keep Alive
