@@ -20,27 +20,25 @@ jobs:
           Start-Process -FilePath "msiexec.exe" -Args "/i crd.msi /quiet /qn" -Wait
 
       # ========================================================
-      # بداية التعديل: البحث التلقائي عن الملف وتشغيله
+      # بداية التعديل: تثبيت الشاشة والكرت (نسخة مصححة 100%)
       # ========================================================
       - name: Ultimate GPU Injection (Mesa3D System-Wide)
         shell: pwsh
         run: |
-          # 1. تثبيت تعريف الشاشة الوهمية (مع كود البحث عن المسار)
+          # 1. تثبيت تعريف الشاشة الوهمية
           Write-Host ">>> 1. Installing Virtual Display Driver..."
+          # تحميل الملف
           Invoke-WebRequest -Uri "https://www.amyuni.com/downloads/usbmmidd_v2.zip" -OutFile "usbmmidd.zip"
           
-          # فك الضغط
+          # فك الضغط (Force للكتابة فوق أي ملفات)
           Expand-Archive "usbmmidd.zip" -DestinationPath "c:\usbmmidd" -Force
           
-          # البحث عن مكان الملف التنفيذي تلقائياً (لحل مشكلة المسار)
+          # البحث الذكي عن الملف التنفيذي (لأن الاسم والمكان قد يتغيران)
           $exePath = Get-ChildItem -Path "c:\usbmmidd" -Recurse -Filter "deviceinstaller64.exe" | Select-Object -First 1
           
           if ($exePath) {
-              # الدخول إلى المجلد الذي يحتوي على الملف
               Set-Location -Path $exePath.DirectoryName
               Write-Host "Found installer at: $($exePath.DirectoryName)"
-              
-              # التشغيل
               & .\deviceinstaller64.exe install usbmmidd.inf usbmmidd
               & .\deviceinstaller64.exe enableidd 1
               Write-Host "✅ Virtual Display Active."
@@ -48,10 +46,14 @@ jobs:
               Write-Error "Could not find deviceinstaller64.exe"
           }
 
-          # 2. تحميل Mesa3D (الكارت الوهمي)
+          # 2. تحميل Mesa3D (تم إصلاح الرابط + إضافة UserAgent)
           Write-Host ">>> 2. Downloading Mesa3D (Fake GPU)..."
           cd C:\
-          Invoke-WebRequest -Uri "https://github.com/pal1000/mesa-dist-win/releases/download/23.1.9/mesa3d-23.1.9-release-mingw.7z" -OutFile "mesa.7z"
+          $mesaUrl = "https://github.com/pal1000/mesa-dist-win/releases/download/25.3.3/mesa3d-25.3.3-release-mingw.7z"
+          
+          # إضافة UserAgent ضروري جداً لتجنب حظر GitHub للتحميل التلقائي
+          Invoke-WebRequest -Uri $mesaUrl -OutFile "mesa.7z" -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+          
           7z x mesa.7z -oc:\mesa3d
           $MesaDll = "C:\mesa3d\x64\opengl32.dll"
 
