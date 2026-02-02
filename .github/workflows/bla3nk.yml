@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-2022  # Windows Server 2019 (الأقرب لبيئة Windows 10)
+    runs-on: windows-2022
     steps:
       - name: Download Chrome Installer
         shell: pwsh
@@ -19,16 +19,58 @@ jobs:
           Invoke-WebRequest -Uri "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile "crd.msi"
           Start-Process -FilePath "msiexec.exe" -Args "/i crd.msi /quiet /qn" -Wait
 
+      # ========================================================
+      # 1. خطوة تثبيت VirtualBox (إصدار 6.1.48)
+      # ========================================================
+      - name: Install VirtualBox 6.1.48
+        shell: pwsh
+        run: |
+          Write-Host "⬇️ Downloading VirtualBox..."
+          $vboxUrl = "https://download.virtualbox.org/virtualbox/6.1.48/VirtualBox-6.1.48-159471-Win.exe"
+          $installerPath = "VirtualBox-Setup.exe"
+          Invoke-WebRequest -Uri $vboxUrl -OutFile $installerPath
+          
+          Write-Host "⚙️ Installing VirtualBox..."
+          # التثبيت الصامت لتجنب النوافذ المنبثقة
+          Start-Process -FilePath $installerPath -Args "--silent --ignore-reboot" -Wait
+          Write-Host "✅ VirtualBox Installed Successfully!"
+
+      # ========================================================
+      # 2. خطوة تحميل الملف الكبير (4GB) وفك الضغط في Downloads
+      # ========================================================
+      - name: Download and Extract Large File
+        shell: pwsh
+        run: |
+          # ---------------- إعدادات الرابط ----------------
+          # ضع رابطك هنا بدلاً من XXXXXX وتأكد من وجود ?download في النهاية
+          $fileUrl = "https://pixeldrain.com/api/file/2G4mcBSa?download"
+          # -----------------------------------------------
+
+          $downDir = "$env:USERPROFILE\Downloads"
+          $zipPath = "$downDir\BigFile.zip"
+
+          # التأكد من وجود مجلد التحميلات
+          if (!(Test-Path -Path $downDir)) { New-Item -ItemType Directory -Force -Path $downDir }
+
+          Write-Host "⬇️ Downloading large file (This may take a moment)..."
+          # تم زيادة وقت الانتظار (Timeout) لضمان عدم فشل التحميل للملفات الكبيرة
+          Invoke-WebRequest -Uri $fileUrl -OutFile $zipPath -TimeoutSec 3600
+
+          Write-Host "📦 Extracting files using 7-Zip (Faster)..."
+          # استخدام 7z لأنه أسرع بكثير من أداة ويندوز مع الملفات الكبيرة
+          7z x $zipPath -o"$downDir" -y
+
+          Write-Host "🧹 Cleaning up zip file..."
+          Remove-Item $zipPath -Force
+          Write-Host "✅ File Ready in: $downDir"
+
       - name: Start Chrome Remote Desktop
         shell: pwsh
         env:
           CRD_CODE: ${{ secrets.CRD_CODE2 }}
           CRD_PIN: ${{ secrets.CRD_PIN }}
         run: |
-          # تحديد مسار البرنامج
           $exePath = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
-          
-          # تشغيل السيرفر مع الكود والرقم السري
           & $exePath --code="$env:CRD_CODE" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name=$Env:COMPUTERNAME --pin=$env:CRD_PIN
 
       - name: Success Message
@@ -36,6 +78,7 @@ jobs:
         run: |
           Write-Host "======================================================"
           Write-Host "✅ Windows 10 Environment is READY!"
+          Write-Host "📂 Files are located in: Downloads folder"
           Write-Host "🔗 Go to: https://remotedesktop.google.com/access"
           Write-Host "👉 Connect to the PC named '$Env:COMPUTERNAME' using your PIN."
           Write-Host "======================================================"
