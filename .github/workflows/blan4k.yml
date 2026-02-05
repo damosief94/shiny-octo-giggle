@@ -1,4 +1,4 @@
-name: Ultimate-Win10-CRD3
+name: Ultimate-Win10-CRD
 
 on: 
   workflow_dispatch:
@@ -19,50 +19,48 @@ jobs:
           Invoke-WebRequest -Uri "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile "crd.msi"
           Start-Process -FilePath "msiexec.exe" -Args "/i crd.msi /quiet /qn" -Wait
 
-      # ========================================================
-      # 1. خطوة تثبيت VirtualBox (إصدار 6.1.48)
-      # ========================================================
+      # تثبيت VirtualBox
       - name: Install VirtualBox 6.1.48
         shell: pwsh
         run: |
           Write-Host "⬇️ Downloading VirtualBox..."
           $vboxUrl = "https://download.virtualbox.org/virtualbox/6.1.48/VirtualBox-6.1.48-159471-Win.exe"
           $installerPath = "VirtualBox-Setup.exe"
-          Invoke-WebRequest -Uri $vboxUrl -OutFile $installerPath
+          
+          (New-Object System.Net.WebClient).DownloadFile($vboxUrl, $installerPath)
           
           Write-Host "⚙️ Installing VirtualBox..."
-          # التثبيت الصامت لتجنب النوافذ المنبثقة
           Start-Process -FilePath $installerPath -Args "--silent --ignore-reboot" -Wait
           Write-Host "✅ VirtualBox Installed Successfully!"
 
-      # ========================================================
-      # 2. خطوة تحميل الملف الكبير (4GB) وفك الضغط في Downloads
-      # ========================================================
-      - name: Download and Extract Large File
-        shell: pwsh
+      # تحميل الملف الكبير على سطح المكتب (Desktop)
+      - name: Download and Extract to DESKTOP
+        shell: cmd
         run: |
-          # ---------------- إعدادات الرابط ----------------
-          # ضع رابطك هنا بدلاً من XXXXXX وتأكد من وجود ?download في النهاية
-          $fileUrl = "https://pixeldrain.com/api/file/2G4mcBSa?download"
-          # -----------------------------------------------
+          @echo off
+          echo ⬇️ Downloading large file directly to Desktop...
+          
+          REM ================================================================
+          REM رابط الملف الخاص بك
+          set "FILE_URL=https://huggingface.co/datasets/swelam100/rdp/resolve/main/win.zip"
+          REM ================================================================
 
-          $downDir = "$env:USERPROFILE\Downloads"
-          $zipPath = "$downDir\BigFile.zip"
+          REM الانتقال إلى سطح المكتب الخاص بالمستخدم الحالي
+          cd /d "%USERPROFILE%\Desktop"
+          
+          REM التحميل باستخدام Curl
+          curl -L -o BigFile.zip "%FILE_URL%"
 
-          # التأكد من وجود مجلد التحميلات
-          if (!(Test-Path -Path $downDir)) { New-Item -ItemType Directory -Force -Path $downDir }
-
-          Write-Host "⬇️ Downloading large file (This may take a moment)..."
-          # تم زيادة وقت الانتظار (Timeout) لضمان عدم فشل التحميل للملفات الكبيرة
-          Invoke-WebRequest -Uri $fileUrl -OutFile $zipPath -TimeoutSec 3600
-
-          Write-Host "📦 Extracting files using 7-Zip (Faster)..."
-          # استخدام 7z لأنه أسرع بكثير من أداة ويندوز مع الملفات الكبيرة
-          7z x $zipPath -o"$downDir" -y
-
-          Write-Host "🧹 Cleaning up zip file..."
-          Remove-Item $zipPath -Force
-          Write-Host "✅ File Ready in: $downDir"
+          echo 📦 Extracting files here...
+          7z x BigFile.zip -y
+          
+          echo 🧹 Cleaning up zip file...
+          del BigFile.zip
+          
+          REM إنشاء ملف نصي للتأكيد
+          echo Files Downloaded Successfully by Github Actions > "Download_Complete.txt"
+          
+          echo ✅ Done! Files are on your Desktop.
 
       - name: Start Chrome Remote Desktop
         shell: pwsh
@@ -71,16 +69,25 @@ jobs:
           CRD_PIN: ${{ secrets.CRD_PIN }}
         run: |
           $exePath = "${Env:PROGRAMFILES(X86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
-          & $exePath --code="$env:CRD_CODE" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name=$Env:COMPUTERNAME --pin=$env:CRD_PIN
+          
+          $UniqueName = "${{ github.actor }}-RDP-${{ github.run_number }}"
+          
+          Write-Host "======================================================"
+          Write-Host "🖥️ SETTING RDP NAME TO: $UniqueName"
+          Write-Host "======================================================"
+          
+          & $exePath --code="$env:CRD_CODE" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$UniqueName" --pin=$env:CRD_PIN
 
       - name: Success Message
         shell: pwsh
         run: |
           Write-Host "======================================================"
           Write-Host "✅ Windows 10 Environment is READY!"
-          Write-Host "📂 Files are located in: Downloads folder"
+          Write-Host "📂 FILES ARE ON THE DESKTOP (Look for extracted folders)"
           Write-Host "🔗 Go to: https://remotedesktop.google.com/access"
-          Write-Host "👉 Connect to the PC named '$Env:COMPUTERNAME' using your PIN."
+          
+          $FinalName = "${{ github.actor }}-RDP4-${{ github.run_number }}"
+          Write-Host "👉 Connect to the PC named '$FinalName' using your PIN."
           Write-Host "======================================================"
 
       - name: Keep Alive
