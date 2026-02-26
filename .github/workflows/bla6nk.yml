@@ -97,7 +97,7 @@ jobs:
         shell: pwsh
         run: |
           $vboxManage = "$env:ProgramFiles\Oracle\VirtualBox\VBoxManage.exe"
-          $winFolder = "$env:USERPROFILE\Desktop\win"
+          $winFolder = "$env:USERPROFILE\Desktop\wino"
           
           # البحث عن ملف VBox
           $vboxFile = Get-ChildItem -Path $winFolder -Filter *.vbox -Recurse | Select-Object -First 1
